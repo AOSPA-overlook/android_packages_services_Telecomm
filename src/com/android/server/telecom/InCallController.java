@@ -47,10 +47,13 @@ import android.os.RemoteException;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.os.UserManager;
+import android.os.Vibrator;
 import android.permission.PermissionManager;
+import android.provider.Settings;
 import android.telecom.CallAudioState;
 import android.telecom.CallEndpoint;
 import android.telecom.ConnectionService;
+import android.telecom.DisconnectCause;
 import android.telecom.InCallService;
 import android.telecom.Log;
 import android.telecom.Logging.Runnable;
@@ -1186,6 +1189,7 @@ public class InCallController extends CallsManagerListenerBase implements
     private final Context mContext;
     private final AppOpsManager mAppOpsManager;
     private final SensorPrivacyManager mSensorPrivacyManager;
+    private final Vibrator mVibrator;
     private final TelecomSystem.SyncRoot mLock;
     private final CallsManager mCallsManager;
     private final SystemStateHelper mSystemStateHelper;
@@ -1245,6 +1249,7 @@ public class InCallController extends CallsManagerListenerBase implements
         mContext = context;
         mAppOpsManager = context.getSystemService(AppOpsManager.class);
         mSensorPrivacyManager = context.getSystemService(SensorPrivacyManager.class);
+        mVibrator = (Vibrator) context.getSystemService(Context.VIBRATOR_SERVICE);
         mLock = lock;
         mCallsManager = callsManager;
         mSystemStateHelper = systemStateHelper;
@@ -1516,7 +1521,25 @@ public class InCallController extends CallsManagerListenerBase implements
     @Override
     public void onCallStateChanged(Call call, int oldState, int newState) {
         maybeTrackMicrophoneUse(isMuted());
+        boolean vibrateOnConnect = Settings.System.getIntForUser(mContext.getContentResolver(),
+            Settings.System.VIBRATE_ON_CONNECT, 1, UserHandle.USER_CURRENT) == 1;
+        boolean vibrateOnDisconnect = Settings.System.getIntForUser(mContext.getContentResolver(),
+            Settings.System.VIBRATE_ON_DISCONNECT, 1, UserHandle.USER_CURRENT) == 1;
+
+        if (oldState == CallState.DIALING && newState == CallState.ACTIVE && vibrateOnConnect) {
+            vibrate(100, 200, 0);
+        } else if (oldState == CallState.ACTIVE && newState == CallState.DISCONNECTED
+                && vibrateOnDisconnect) {
+            vibrate(100, 200, 0);
+        }
         updateCall(call);
+    }
+
+    public void vibrate(int v1, int p1, int v2) {
+        long[] pattern = new long[] {
+            0, v1, p1, v2
+        };
+        mVibrator.vibrate(pattern, -1);
     }
 
     @Override

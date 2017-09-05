@@ -807,6 +807,11 @@ public class Ringer {
 
         stopRinging();
 
+        if (Settings.System.getIntForUser(mContext.getContentResolver(),
+                Settings.System.VIBRATE_ON_CALLWAITING, 1, UserHandle.USER_CURRENT) == 1) {
+            mInCallController.vibrate(200, 300, 500);
+        }
+
         if (mCallWaitingPlayer == null) {
             Log.addEvent(call, LogUtils.Events.START_CALL_WAITING_TONE, reason);
             mCallWaitingCall = call;
