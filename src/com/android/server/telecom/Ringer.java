@@ -47,6 +47,7 @@ import android.os.Vibrator;
 import android.provider.Settings;
 import android.telecom.Log;
 import android.telecom.TelecomManager;
+import android.provider.Settings;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.telecom.LogUtils.EventTimer;
@@ -715,6 +716,11 @@ public class Ringer {
         Log.v(this, "Playing call-waiting tone.");
 
         stopRinging();
+
+        if (Settings.System.getIntForUser(mContext.getContentResolver(),
+                Settings.System.VIBRATE_ON_CALLWAITING, 1, UserHandle.USER_CURRENT) == 1) {
+            mInCallController.vibrate(200, 300, 500);
+        }
 
         if (mCallWaitingPlayer == null) {
             Log.addEvent(call, LogUtils.Events.START_CALL_WAITING_TONE, reason);
