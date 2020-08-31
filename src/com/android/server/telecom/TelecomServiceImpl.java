@@ -57,7 +57,6 @@ import android.text.TextUtils;
 import android.util.EventLog;
 
 import com.android.internal.telecom.ITelecomService;
-import com.android.internal.telephony.TelephonyPermissions;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
@@ -279,6 +278,23 @@ public class TelecomServiceImpl {
 
         @Override
         public List<PhoneAccountHandle> getPhoneAccountsForPackage(String packageName) {
+            //TODO: Deprecate this in S
+            try {
+                enforceCallingPackage(packageName);
+            } catch (SecurityException se1) {
+                EventLog.writeEvent(0x534e4554, "153995334", Binder.getCallingUid(),
+                        "getPhoneAccountsForPackage: invalid calling package");
+                throw se1;
+            }
+
+            try {
+                enforcePermission(READ_PRIVILEGED_PHONE_STATE);
+            } catch (SecurityException se2) {
+                EventLog.writeEvent(0x534e4554, "153995334", Binder.getCallingUid(),
+                        "getPhoneAccountsForPackage: no permission");
+                throw se2;
+            }
+
             synchronized (mLock) {
                 final UserHandle callingUserHandle = Binder.getCallingUserHandle();
                 long token = Binder.clearCallingIdentity();
@@ -710,7 +726,7 @@ public class TelecomServiceImpl {
         public ComponentName getDefaultPhoneApp() {
             try {
                 Log.startSession("TSI.gDPA");
-                return mDefaultDialerCache.getSystemDialerComponent();
+                return mDefaultDialerCache.getDialtactsSystemDialerComponent();
             } finally {
                 Log.endSession();
             }

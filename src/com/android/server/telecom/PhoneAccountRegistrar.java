@@ -18,6 +18,7 @@ package com.android.server.telecom;
 
 import android.Manifest;
 import android.annotation.NonNull;
+import android.annotation.Nullable;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -485,6 +486,7 @@ public class PhoneAccountRegistrar {
      * target phone account.
      * @return phone account handle of sim call manager based on the ongoing call.
      */
+    @Nullable
     public PhoneAccountHandle getSimCallManagerFromCall(Call call) {
         if (call == null) {
             return null;
@@ -1603,10 +1605,16 @@ public class PhoneAccountRegistrar {
             return BitmapFactory.decodeByteArray(imageByteArray, 0, imageByteArray.length);
         }
 
+        @Nullable
         protected Icon readIcon(XmlPullParser parser) throws IOException {
-            byte[] iconByteArray = Base64.decode(parser.getText(), 0);
-            ByteArrayInputStream stream = new ByteArrayInputStream(iconByteArray);
-            return Icon.createFromStream(stream);
+            try {
+                byte[] iconByteArray = Base64.decode(parser.getText(), 0);
+                ByteArrayInputStream stream = new ByteArrayInputStream(iconByteArray);
+                return Icon.createFromStream(stream);
+            } catch (IllegalArgumentException e) {
+                Log.e(this, e, "Bitmap must not be null.");
+                return null;
+            }
         }
     }
 
