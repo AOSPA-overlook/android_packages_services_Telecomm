@@ -35,11 +35,13 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import android.Manifest;
+import android.app.AppOpsManager;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.UiModeManager;
@@ -59,13 +61,14 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.UserHandle;
+import android.telecom.CallAudioState;
 import android.telecom.InCallService;
-import android.telecom.Log;
 import android.telecom.ParcelableCall;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.test.mock.MockContext;
 import android.test.suitebuilder.annotation.MediumTest;
+import android.test.suitebuilder.annotation.SmallTest;
 import android.text.TextUtils;
 
 import com.android.internal.telecom.IInCallAdapter;
@@ -111,6 +114,7 @@ public class InCallControllerTests extends TelecomTestCase {
     @Mock PackageManager mMockPackageManager;
     @Mock Call mMockCall;
     @Mock Resources mMockResources;
+    @Mock AppOpsManager mMockAppOpsManager;
     @Mock MockContext mMockContext;
     @Mock Timeouts.Adapter mTimeoutsAdapter;
     @Mock DefaultDialerCache mDefaultDialerCache;
@@ -146,6 +150,8 @@ public class InCallControllerTests extends TelecomTestCase {
     private InCallController mInCallController;
     private TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() {};
     private EmergencyCallHelper mEmergencyCallHelper;
+    private SystemStateHelper.SystemStateListener mSystemStateListener;
+    private CarModeTracker mCarModeTracker = spy(new CarModeTracker());
 
     @Override
     @Before
@@ -154,6 +160,7 @@ public class InCallControllerTests extends TelecomTestCase {
         MockitoAnnotations.initMocks(this);
         when(mMockCall.getAnalytics()).thenReturn(new Analytics.CallInfo());
         doReturn(mMockResources).when(mMockContext).getResources();
+        doReturn(mMockAppOpsManager).when(mMockContext).getSystemService(AppOpsManager.class);
         doReturn(SYS_PKG).when(mMockResources).getString(
                 com.android.internal.R.string.config_defaultDialer);
         doReturn(SYS_CLASS).when(mMockResources).getString(R.string.incall_default_class);
@@ -164,11 +171,17 @@ public class InCallControllerTests extends TelecomTestCase {
         mEmergencyCallHelper = new EmergencyCallHelper(mMockContext, mDefaultDialerCache,
                 mTimeoutsAdapter);
         when(mMockCallsManager.getRoleManagerAdapter()).thenReturn(mMockRoleManagerAdapter);
-        mInCallController = new InCallController(mMockContext, mLock, mMockCallsManager,
-                mMockSystemStateHelper, mDefaultDialerCache, mTimeoutsAdapter,
-                mEmergencyCallHelper, new CarModeTracker(), mClockProxy);
         when(mMockContext.getSystemService(eq(Context.NOTIFICATION_SERVICE)))
                 .thenReturn(mNotificationManager);
+        mInCallController = new InCallController(mMockContext, mLock, mMockCallsManager,
+                mMockSystemStateHelper, mDefaultDialerCache, mTimeoutsAdapter,
+                mEmergencyCallHelper, mCarModeTracker, mClockProxy);
+
+        ArgumentCaptor<SystemStateHelper.SystemStateListener> systemStateListenerArgumentCaptor
+                = ArgumentCaptor.forClass(SystemStateHelper.SystemStateListener.class);
+        verify(mMockSystemStateHelper).addListener(systemStateListenerArgumentCaptor.capture());
+        mSystemStateListener = systemStateListenerArgumentCaptor.getValue();
+
         // Companion Apps don't have CONTROL_INCALL_EXPERIENCE permission.
         doAnswer(invocation -> {
             int uid = invocation.getArgument(0);
@@ -200,6 +213,7 @@ public class InCallControllerTests extends TelecomTestCase {
         when(mMockPackageManager.checkPermission(
                 matches(Manifest.permission.CONTROL_INCALL_EXPERIENCE),
                 matches(NONUI_PKG))).thenReturn(PackageManager.PERMISSION_GRANTED);
+        when(mMockCallsManager.getAudioState()).thenReturn(new CallAudioState(false, 0, 0));
     }
 
     @Override
@@ -208,6 +222,24 @@ public class InCallControllerTests extends TelecomTestCase {
         mInCallController.getHandler().removeCallbacksAndMessages(null);
         waitForHandlerAction(mInCallController.getHandler(), 1000);
         super.tearDown();
+    }
+
+    @SmallTest
+    @Test
+    public void testCarModeAppRemoval() {
+        setupMockPackageManager(true /* default */, true /* system */, true /* external calls */);
+        when(mMockCallsManager.getCurrentUserHandle()).thenReturn(mUserHandle);
+        when(mMockContext.getPackageManager()).thenReturn(mMockPackageManager);
+
+        when(mMockSystemStateHelper.isCarMode()).thenReturn(true);
+
+        mSystemStateListener.onCarModeChanged(666, CAR_PKG, true);
+        verify(mCarModeTracker).handleEnterCarMode(666, CAR_PKG);
+        assertTrue(mCarModeTracker.isInCarMode());
+
+        mSystemStateListener.onPackageUninstalled(CAR_PKG);
+        verify(mCarModeTracker).forceExitCarMode(CAR_PKG);
+        assertFalse(mCarModeTracker.isInCarMode());
     }
 
     @MediumTest
@@ -596,6 +628,7 @@ public class InCallControllerTests extends TelecomTestCase {
                 any(Intent.class), any(ServiceConnection.class), anyInt(), any(UserHandle.class)))
                 .thenReturn(true);
         when(mMockContext.getApplicationInfo()).thenReturn(applicationInfo);
+        when(mDefaultDialerCache.getDefaultDialerApplication(CURRENT_USER_ID)).thenReturn(DEF_PKG);
 
         setupMockPackageManager(true /* default */, true /* system */, false /* external calls */);
         mInCallController.bindToServices(mMockCall);
@@ -622,7 +655,7 @@ public class InCallControllerTests extends TelecomTestCase {
 
         verify(mNotificationManager).notify(eq(NOTIFICATION_TAG),
                 eq(IN_CALL_SERVICE_NOTIFICATION_ID), any(Notification.class));
-        verify(mCallInfo).addInCallService(eq(sysDialerComponentName.flattenToShortString()),
+        verify(mCallInfo).addInCallService(eq(defDialerComponentName.flattenToShortString()),
                 anyInt(), anyLong(), eq(true));
 
         ArgumentCaptor<Intent> bindIntentCaptor2 = ArgumentCaptor.forClass(Intent.class);
@@ -632,6 +665,7 @@ public class InCallControllerTests extends TelecomTestCase {
                 eq(Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE
                         | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS),
                 eq(UserHandle.CURRENT));
+        assertEquals(sysDialerComponentName, bindIntentCaptor2.getValue().getComponent());
     }
 
     /**
@@ -1226,6 +1260,28 @@ public class InCallControllerTests extends TelecomTestCase {
             }
         }).when(mMockPackageManager).queryIntentServicesAsUser(
                 any(Intent.class), anyInt(), eq(CURRENT_USER_ID));
+
+        if (useDefaultDialer) {
+            when(mMockPackageManager
+                    .getComponentEnabledSetting(new ComponentName(DEF_PKG, DEF_CLASS)))
+                    .thenReturn(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
+        }
+
+        when(mMockPackageManager
+                .getComponentEnabledSetting(new ComponentName(SYS_PKG, SYS_CLASS)))
+                .thenReturn(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
+
+        when(mMockPackageManager
+                .getComponentEnabledSetting(new ComponentName(CAR_PKG, CAR_CLASS)))
+                .thenReturn(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
+
+        when(mMockPackageManager
+                .getComponentEnabledSetting(new ComponentName(COMPANION_PKG, COMPANION_CLASS)))
+                .thenReturn(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
+
+        when(mMockPackageManager
+                .getComponentEnabledSetting(new ComponentName(CAR2_PKG, CAR2_CLASS)))
+                .thenReturn(PackageManager.COMPONENT_ENABLED_STATE_ENABLED);
     }
 
     private void setupMockPackageManagerLocationPermission(final String pkg,
