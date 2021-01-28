@@ -19,8 +19,6 @@ package com.android.server.telecom;
 import android.content.ComponentName;
 import android.content.Context;
 import android.net.Uri;
-import android.os.ServiceManager;
-import android.os.RemoteException;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
@@ -29,7 +27,6 @@ import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
 
 import com.android.internal.annotations.VisibleForTesting;
-import org.codeaurora.internal.IExtTelephony;
 
 import java.util.Collections;
 import java.util.Comparator;
@@ -83,33 +80,5 @@ public final class TelephonyUtil {
         } catch (IllegalStateException ise) {
             return false;
         }
-    }
-
-    public static boolean isLocalEmergencyNumber(String address) {
-        IExtTelephony mIExtTelephony =
-            IExtTelephony.Stub.asInterface(ServiceManager.getService("qti.radio.extphone"));
-        boolean result = false;
-        try {
-            result = mIExtTelephony.isLocalEmergencyNumber(address);
-        } catch (RemoteException ex) {
-            Log.e(LOG_TAG, ex, "RemoteException");
-        } catch (NullPointerException ex) {
-            Log.e(LOG_TAG, ex, "NullPointerException");
-        }
-        return result;
-    }
-
-    public static boolean isPotentialLocalEmergencyNumber(String address) {
-        IExtTelephony mIExtTelephony =
-            IExtTelephony.Stub.asInterface(ServiceManager.getService("qti.radio.extphone"));
-        boolean result = false;
-        try {
-            result = mIExtTelephony.isPotentialLocalEmergencyNumber(address);
-        } catch (RemoteException ex) {
-            Log.e(LOG_TAG, ex, "RemoteException");
-        } catch (NullPointerException ex) {
-            Log.e(LOG_TAG, ex, "NullPointerException");
-        }
-        return result;
     }
 }
