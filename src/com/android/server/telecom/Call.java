@@ -2633,7 +2633,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mState == CallState.ACTIVE;
     }
 
-    Bundle getExtras() {
+    @VisibleForTesting
+    public Bundle getExtras() {
         return mExtras;
     }
 
