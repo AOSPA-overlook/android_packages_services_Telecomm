@@ -24,6 +24,9 @@ android_app {
     libs: [
       "ims-ext-common",
     ],
+    uses_libs: [
+      "ims-ext-common",
+    ],
     srcs: [
         ":Telecom-srcs",
         "proto/**/*.proto",
@@ -77,6 +80,9 @@ android_test {
         "android.test.runner",
         "telephony-common",
         "telephony-ext",
+        "ims-ext-common",
+    ],
+    uses_libs: [
         "ims-ext-common",
     ],
 

@@ -41,8 +41,8 @@
 
     <application android:label="@string/app_name"
                  android:debuggable="true">
-        <uses-library android:name="android.test.runner" />
         <uses-library android:name="ims-ext-common"/>
+        <uses-library android:name="android.test.runner" />
     </application>
 
     <!--
