@@ -832,12 +832,12 @@ public class TelecomServiceImpl {
         }
 
         /**
-         * @see android.telecom.TelecomManager#hasCompanionInCallServiceAccess
+         * @see android.telecom.TelecomManager#hasManageOngoingCallsPermission
          */
         @Override
-        public boolean hasCompanionInCallServiceAccess(String callingPackage) {
+        public boolean hasManageOngoingCallsPermission(String callingPackage) {
             try {
-                Log.startSession("TSI.hCICSA");
+                Log.startSession("TSI.hMOCP");
                 return PermissionChecker.checkPermissionForPreflight(mContext,
                         Manifest.permission.MANAGE_ONGOING_CALLS,
                                 PermissionChecker.PID_UNKNOWN, Binder.getCallingUid(),
@@ -1790,6 +1790,7 @@ public class TelecomServiceImpl {
                                 mCallsManager.markCallAsRemoved(call);
                             }
                         }
+                        mCallsManager.getInCallController().unbindFromServices();
                     });
                 }
             } finally {
@@ -1913,6 +1914,30 @@ public class TelecomServiceImpl {
                     long token = Binder.clearCallingIdentity();
                     try {
                         mCallsManager.getRoleManagerAdapter().setTestDefaultDialer(packageName);
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        @Override
+        public void setTestCallDiagnosticService(String packageName) {
+            try {
+                Log.startSession("TSI.sTCDS");
+                enforceModifyPermission();
+                enforceShellOnly(Binder.getCallingUid(), "setTestCallDiagnosticService is for "
+                        + "shell use only.");
+                synchronized (mLock) {
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        CallDiagnosticServiceController controller =
+                                mCallsManager.getCallDiagnosticServiceController();
+                        if (controller != null) {
+                            controller.setTestCallDiagnosticService(packageName);
+                        }
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }

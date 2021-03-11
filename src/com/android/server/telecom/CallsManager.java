@@ -337,6 +337,7 @@ public class CallsManager extends Call.ListenerBase
     private final ConnectionServiceRepository mConnectionServiceRepository;
     private final DtmfLocalTonePlayer mDtmfLocalTonePlayer;
     private final InCallController mInCallController;
+    private final CallDiagnosticServiceController mCallDiagnosticServiceController;
     private final CallAudioManager mCallAudioManager;
     private final CallRecordingTonePlayer mCallRecordingTonePlayer;
     private RespondViaSmsManager mRespondViaSmsManager;
@@ -500,6 +501,7 @@ public class CallsManager extends Call.ListenerBase
             CallAudioRouteStateMachine.Factory callAudioRouteStateMachineFactory,
             CallAudioModeStateMachine.Factory callAudioModeStateMachineFactory,
             InCallControllerFactory inCallControllerFactory,
+            CallDiagnosticServiceController callDiagnosticServiceController,
             RoleManagerAdapter roleManagerAdapter,
             ToastFactory toastFactory) {
         mContext = context;
@@ -556,6 +558,7 @@ public class CallsManager extends Call.ListenerBase
         mInCallController = inCallControllerFactory.create(context, mLock, this,
                 systemStateHelper, defaultDialerCache, mTimeoutsAdapter,
                 emergencyCallHelper);
+        mCallDiagnosticServiceController = callDiagnosticServiceController;
         mRinger = new Ringer(playerFactory, context, systemSettingsUtil, asyncRingtonePlayer,
                 ringtoneFactory, systemVibrator,
                 new Ringer.VibrationEffectProxy(), mInCallController);
@@ -585,6 +588,7 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mCallLogManager);
         mListeners.add(mPhoneStateBroadcaster);
         mListeners.add(mInCallController);
+        mListeners.add(mCallDiagnosticServiceController);
         mListeners.add(mCallAudioManager);
         mListeners.add(mCallRecordingTonePlayer);
         mListeners.add(missedCallNotifier);
@@ -634,6 +638,10 @@ public class CallsManager extends Call.ListenerBase
 
     public RoleManagerAdapter getRoleManagerAdapter() {
         return mRoleManagerAdapter;
+    }
+
+    public CallDiagnosticServiceController getCallDiagnosticServiceController() {
+        return mCallDiagnosticServiceController;
     }
 
     @Override
@@ -777,9 +785,16 @@ public class CallsManager extends Call.ListenerBase
         if (incomingCall.isUsingCallFiltering()) {
             boolean isInContacts = incomingCall.getCallerInfo() != null
                     && incomingCall.getCallerInfo().contactExists;
+            Connection.CallFilteringCompletionInfo completionInfo =
+                    new Connection.CallFilteringCompletionInfo(!result.shouldAllowCall,
+                            isInContacts,
+                            result.mCallScreeningResponse == null
+                                    ? null : result.mCallScreeningResponse.toCallResponse(),
+                            result.mCallScreeningComponentName == null ? null
+                                    : ComponentName.unflattenFromString(
+                                            result.mCallScreeningComponentName));
             incomingCall.getConnectionService().onCallFilteringCompleted(incomingCall,
-                    !result.shouldAllowCall, isInContacts, result.mCallScreeningResponse,
-                    result.mIsResponseFromSystemDialer);
+                    completionInfo);
         }
 
         // Get rid of the call composer attachments that aren't wanted
@@ -3205,7 +3220,11 @@ public class CallsManager extends Call.ListenerBase
                 Log.i(this, "Auto-unholding held foreground call (call doesn't support hold)");
                 foregroundCall.unhold();
             }
-        }, new LoggedHandlerExecutor(mHandler, "CM.mCAR", mLock));
+        }, new LoggedHandlerExecutor(mHandler, "CM.mCAR", mLock))
+                .exceptionally((throwable) -> {
+                    Log.e(TAG, throwable, "Error while executing call removal");
+                    return null;
+                });
     }
 
     /**
@@ -3756,25 +3775,29 @@ public class CallsManager extends Call.ListenerBase
                 Trace.beginSection("onCallStateChanged");
 
                 maybeHandleHandover(call, newState);
+                notifyCallStateChanged(call, oldState, newState);
 
-                // Only broadcast state change for calls that are being tracked.
-                if (mCalls.contains(call)) {
-                    updateCanAddCall();
-                    updateHasActiveRttCall();
-                    for (CallsManagerListener listener : mListeners) {
-                        if (LogUtils.SYSTRACE_DEBUG) {
-                            Trace.beginSection(listener.getClass().toString() +
-                                    " onCallStateChanged");
-                        }
-                        listener.onCallStateChanged(call, oldState, newState);
-                        if (LogUtils.SYSTRACE_DEBUG) {
-                            Trace.endSection();
-                        }
-                    }
-                }
                 Trace.endSection();
             } else {
                 Log.i(this, "failed in setting the state to new state");
+            }
+        }
+    }
+
+    private void notifyCallStateChanged(Call call, int oldState, int newState) {
+        // Only broadcast state change for calls that are being tracked.
+        if (mCalls.contains(call)) {
+            updateCanAddCall();
+            updateHasActiveRttCall();
+            for (CallsManagerListener listener : mListeners) {
+                if (LogUtils.SYSTRACE_DEBUG) {
+                    Trace.beginSection(listener.getClass().toString() +
+                            " onCallStateChanged");
+                }
+                listener.onCallStateChanged(call, oldState, newState);
+                if (LogUtils.SYSTRACE_DEBUG) {
+                    Trace.endSection();
+                }
             }
         }
     }
@@ -4827,6 +4850,13 @@ public class CallsManager extends Call.ListenerBase
             pw.println("mInCallController:");
             pw.increaseIndent();
             mInCallController.dump(pw);
+            pw.decreaseIndent();
+        }
+
+        if (mCallDiagnosticServiceController != null) {
+            pw.println("mCallDiagnosticServiceController:");
+            pw.increaseIndent();
+            mCallDiagnosticServiceController.dump(pw);
             pw.decreaseIndent();
         }
 
