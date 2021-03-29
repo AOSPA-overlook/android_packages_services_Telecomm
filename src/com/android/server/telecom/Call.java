@@ -39,14 +39,14 @@ import android.provider.CallLog;
 import android.provider.ContactsContract.Contacts;
 import android.telecom.BluetoothCallQualityReport;
 import android.telecom.CallAudioState;
+import android.telecom.CallDiagnosticService;
+import android.telecom.CallDiagnostics;
 import android.telecom.CallerInfo;
 import android.telecom.Conference;
 import android.telecom.Connection;
 import android.telecom.ConnectionService;
-import android.telecom.DiagnosticCall;
 import android.telecom.DisconnectCause;
 import android.telecom.GatewayInfo;
-import android.telecom.InCallService;
 import android.telecom.Log;
 import android.telecom.Logging.EventManager;
 import android.telecom.ParcelableConference;
@@ -57,11 +57,12 @@ import android.telecom.Response;
 import android.telecom.StatusHints;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
+import android.telephony.CallQuality;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.TelephonyManager;
 import android.telephony.emergency.EmergencyNumber;
+import android.telephony.ims.ImsReasonInfo;
 import android.text.TextUtils;
-import android.util.ArrayMap;
 import android.widget.Toast;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -81,7 +82,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /**
  *  Encapsulates all aspects of a given phone call throughout its lifecycle, starting
@@ -160,6 +163,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         void onHandoverComplete(Call call);
         void onBluetoothCallQualityReport(Call call, BluetoothCallQualityReport report);
         void onReceivedDeviceToDeviceMessage(Call call, int messageType, int messageValue);
+        void onReceivedCallQualityReport(Call call, CallQuality callQuality);
     }
 
     public abstract static class ListenerBase implements Listener {
@@ -252,6 +256,8 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         public void onBluetoothCallQualityReport(Call call, BluetoothCallQualityReport report) {}
         @Override
         public void onReceivedDeviceToDeviceMessage(Call call, int messageType, int messageValue) {}
+        @Override
+        public void onReceivedCallQualityReport(Call call, CallQuality callQuality) {}
     }
 
     private final CallerInfoLookupHelper.OnQueryCompleteListener mCallerInfoQueryListener =
@@ -662,6 +668,22 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * set.
      */
     private boolean mIsSimCall;
+
+    /**
+     * Set to {@code true} if we received a valid response ({@code null} or otherwise) from
+     * the {@link CallDiagnostics#onCallDisconnected(ImsReasonInfo)} or
+     * {@link CallDiagnostics#onCallDisconnected(int, int)} calls.  This is used to detect a timeout
+     * when awaiting a response from the call diagnostic service.
+     */
+    private boolean mReceivedCallDiagnosticPostCallResponse = false;
+
+    /**
+     * {@link CompletableFuture} used to delay posting disconnection and removal to a call until
+     * after a {@link CallDiagnosticService} is able to handle the disconnection and provide a
+     * disconnect message via {@link CallDiagnostics#onCallDisconnected(ImsReasonInfo)} or
+     * {@link CallDiagnostics#onCallDisconnected(int, int)}.
+     */
+    private CompletableFuture<Boolean> mDisconnectFuture;
 
     /**
      * Persists the specified parameters and initializes the new instance.
@@ -1094,8 +1116,29 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
+    /**
+     * Handles an incoming overridden disconnect message for this call.
+     *
+     * We only care if the disconnect is handled via a future.
+     * @param message the overridden disconnect message.
+     */
     public void handleOverrideDisconnectMessage(@Nullable CharSequence message) {
+        Log.i(this, "handleOverrideDisconnectMessage; callid=%s, msg=%s", getId(), message);
 
+        if (isDisconnectHandledViaFuture()) {
+            mReceivedCallDiagnosticPostCallResponse = true;
+            if (message != null) {
+                Log.addEvent(this, LogUtils.Events.OVERRIDE_DISCONNECT_MESSAGE, message);
+                // Replace the existing disconnect cause in this call
+                setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.ERROR, message,
+                        message, null));
+            }
+
+            mDisconnectFuture.complete(true);
+        } else {
+            Log.w(this, "handleOverrideDisconnectMessage; callid=%s - got override when unbound",
+                    getId());
+        }
     }
 
     /**
@@ -3759,6 +3802,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             for (Listener l : mListeners) {
                 l.onReceivedDeviceToDeviceMessage(this, messageType, messageValue);
             }
+        } else if (Connection.EVENT_CALL_QUALITY_REPORT.equals(event)
+                && extras != null && extras.containsKey(Connection.EXTRA_CALL_QUALITY_REPORT)) {
+            CallQuality callQuality = extras.getParcelable(Connection.EXTRA_CALL_QUALITY_REPORT);
+            for (Listener l : mListeners) {
+                l.onReceivedCallQualityReport(this, callQuality);
+            }
         } else {
             for (Listener l : mListeners) {
                 l.onConnectionEvent(this, event, extras);
@@ -3968,7 +4017,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      * @param message the message type to send.
      * @param value the value for the message.
      */
-    public void sendDeviceToDeviceMessage(@DiagnosticCall.MessageType int message, int value) {
+    public void sendDeviceToDeviceMessage(@CallDiagnostics.MessageType int message, int value) {
         Log.i(this, "sendDeviceToDeviceMessage; callId=%s, msg=%d/%d", getId(), message, value);
         Bundle extras = new Bundle();
         extras.putInt(Connection.EXTRA_DEVICE_TO_DEVICE_MESSAGE_TYPE, message);
@@ -4095,5 +4144,70 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     public boolean isSimCall() {
         return mIsSimCall;
+    }
+
+    /**
+     * Sets whether this is a sim call or not.
+     * @param isSimCall {@code true} if this is a SIM call, {@code false} otherwise.
+     */
+    public void setIsSimCall(boolean isSimCall) {
+        mIsSimCall = isSimCall;
+    }
+
+    /**
+     * Initializes a disconnect future which is used to chain up pending operations which take
+     * place when the {@link CallDiagnosticService} returns the result of the
+     * {@link CallDiagnostics#onCallDisconnected(int, int)} or
+     * {@link CallDiagnostics#onCallDisconnected(ImsReasonInfo)} invocation via
+     * {@link CallDiagnosticServiceAdapter}.  If no {@link CallDiagnosticService} is in use, we
+     * would not try to make a disconnect future.
+     * @param timeoutMillis Timeout we use for waiting for the response.
+     * @return the {@link CompletableFuture}.
+     */
+    public CompletableFuture<Boolean> initializeDisconnectFuture(long timeoutMillis) {
+        if (mDisconnectFuture == null) {
+            mDisconnectFuture = new CompletableFuture<Boolean>()
+                    .completeOnTimeout(false, timeoutMillis, TimeUnit.MILLISECONDS);
+            // After all the chained stuff we will report where the CDS timed out.
+            mDisconnectFuture.thenRunAsync(() -> {
+                if (!mReceivedCallDiagnosticPostCallResponse) {
+                    Log.addEvent(this, LogUtils.Events.CALL_DIAGNOSTIC_SERVICE_TIMEOUT);
+                }
+                // Clear the future as a final step.
+                mDisconnectFuture = null;
+                },
+                new LoggedHandlerExecutor(mHandler, "C.iDF", mLock))
+                    .exceptionally((throwable) -> {
+                        Log.e(this, throwable, "Error while executing disconnect future");
+                        return null;
+                    });
+        }
+        return mDisconnectFuture;
+    }
+
+    /**
+     * @return the disconnect future, if initialized.  Used for chaining operations after creation.
+     */
+    public CompletableFuture<Boolean> getDisconnectFuture() {
+        return mDisconnectFuture;
+    }
+
+    /**
+     * @return {@code true} if disconnection and removal is handled via a future, or {@code false}
+     * if this is handled immediately.
+     */
+    public boolean isDisconnectHandledViaFuture() {
+        return mDisconnectFuture != null;
+    }
+
+    /**
+     * Perform any cleanup on this call as a result of a {@link TelecomServiceImpl}
+     * {@code cleanupStuckCalls} request.
+     */
+    public void cleanup() {
+        if (mDisconnectFuture != null) {
+            mDisconnectFuture.complete(false);
+            mDisconnectFuture = null;
+        }
     }
 }
