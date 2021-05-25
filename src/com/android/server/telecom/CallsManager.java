@@ -5557,8 +5557,8 @@ public class CallsManager extends Call.ListenerBase
     /**
      * Handles changes to a {@link PhoneAccount}.
      *
-     * Checks for changes to video calling availability and updates whether calls for that phone
-     * account are video capable.
+     * Invokes phone account changed handler for calls with matching
+     * phone account.
      *
      * @param registrar The {@link PhoneAccountRegistrar} originating the change.
      * @param phoneAccount The {@link PhoneAccount} which changed.
@@ -5566,11 +5566,9 @@ public class CallsManager extends Call.ListenerBase
     private void handlePhoneAccountChanged(PhoneAccountRegistrar registrar,
             PhoneAccount phoneAccount) {
         Log.i(this, "handlePhoneAccountChanged: phoneAccount=%s", phoneAccount);
-        boolean isVideoNowSupported = phoneAccount.hasCapabilities(
-                PhoneAccount.CAPABILITY_VIDEO_CALLING);
         mCalls.stream()
                 .filter(c -> phoneAccount.getAccountHandle().equals(c.getTargetPhoneAccount()))
-                .forEach(c -> c.setVideoCallingSupportedByPhoneAccount(isVideoNowSupported));
+                .forEach(c -> c.handlePhoneAccountChanged(phoneAccount));
     }
 
     /**
