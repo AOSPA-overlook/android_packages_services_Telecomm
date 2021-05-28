@@ -115,6 +115,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private static final char NO_DTMF_TONE = '\0';
 
     /**
+     * Connection event used to notify InCallService of phoneaccount changes.
+     * Dialer uses phone account capability to decide whether to enable
+     * some options like RTT. This event will be used for such cases.
+     */
+    private static final String EVENT_PHONE_ACCOUNT_CHANGED =
+            "org.codeaurora.telecom.event.EVENT_PHONE_ACCOUNT_CHANGED";
+
+    /**
      * Listener for events on the call.
      */
     @VisibleForTesting
@@ -1568,9 +1576,23 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 l.onTargetPhoneAccountChanged(this);
             }
             configureCallAttributes();
+            notifyPhoneAccountChanged();
         }
         checkIfVideoCapable();
         checkIfRttCapable();
+    }
+
+    public void handlePhoneAccountChanged(PhoneAccount phoneAccount) {
+        Log.i(this, "handlePhoneAccountChanged");
+        boolean isVideoCapable = phoneAccount != null &&
+                phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_VIDEO_CALLING);
+        setVideoCallingSupportedByPhoneAccount(isVideoCapable);
+
+        notifyPhoneAccountChanged();
+    }
+
+    private void notifyPhoneAccountChanged() {
+        onConnectionEvent(EVENT_PHONE_ACCOUNT_CHANGED, null);
     }
 
     public CharSequence getTargetPhoneAccountLabel() {
