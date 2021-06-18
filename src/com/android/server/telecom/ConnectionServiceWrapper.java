@@ -1375,7 +1375,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
      * create a connection has been denied or failed.
      * @param call The call.
      */
-    void createConnectionFailed(final Call call) {
+    @VisibleForTesting
+    public void createConnectionFailed(final Call call) {
         Log.d(this, "createConnectionFailed(%s) via %s.", call, getComponentName());
         BindCallback callback = new BindCallback() {
             @Override

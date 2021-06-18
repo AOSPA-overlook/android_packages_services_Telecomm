@@ -1716,6 +1716,21 @@ public class CallsManager extends Call.ListenerBase
                         }
                     }
 
+                    if (!finalCall.isEmergencyCall() && isInEmergencyCall()) {
+                        Log.i(CallsManager.this, "Aborting call since there's an"
+                                + " ongoing emergency call");
+                        // If the ongoing call is a managed call, we will prevent the outgoing
+                        // call from dialing.
+                        if (isConference) {
+                            notifyCreateConferenceFailed(finalCall.getTargetPhoneAccount(),
+                                    finalCall);
+                        } else {
+                            notifyCreateConnectionFailed(
+                                    finalCall.getTargetPhoneAccount(), finalCall);
+                        }
+                        return CompletableFuture.completedFuture(null);
+                    }
+
                     // If we can not supportany more active calls, our options are to move a call
                     // to hold, disconnect a call, or cancel this call altogether.
                     boolean isRoomForCall = finalCall.isEmergencyCall() ?
@@ -2111,6 +2126,8 @@ public class CallsManager extends Call.ListenerBase
                             handle.getSchemeSpecificPart());
         } catch (IllegalStateException ise) {
             isPotentialEmergencyNumber = false;
+        } catch (RuntimeException r) {
+            isPotentialEmergencyNumber = false;
         }
 
         if (shouldCancelCall) {
@@ -2288,8 +2305,16 @@ public class CallsManager extends Call.ListenerBase
     public void processRedirectedOutgoingCallAfterUserInteraction(String callId, String action) {
         Log.i(this, "processRedirectedOutgoingCallAfterUserInteraction for Call ID %s, action=%s",
                 callId, action);
-        if (mPendingRedirectedOutgoingCall != null && mPendingRedirectedOutgoingCall.getId()
-                .equals(callId)) {
+        if (mPendingRedirectedOutgoingCall != null) {
+            String pendingCallId = mPendingRedirectedOutgoingCall.getId();
+            if (!pendingCallId.equals(callId)) {
+                Log.i(this, "processRedirectedOutgoingCallAfterUserInteraction for new Call ID %s, "
+                        + "cancel the previous pending Call with ID %s", callId, pendingCallId);
+                mPendingRedirectedOutgoingCall.disconnect("Another call redirection requested");
+                mPendingRedirectedOutgoingCallInfo.remove(pendingCallId);
+                mPendingUnredirectedOutgoingCallInfo.remove(pendingCallId);
+            }
+
             if (action.equals(TelecomBroadcastIntentProcessor.ACTION_PLACE_REDIRECTED_CALL)) {
                 mHandler.post(mPendingRedirectedOutgoingCallInfo.get(callId).prepare());
             } else if (action.equals(
@@ -5633,5 +5658,11 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public void addToPendingCallsToDisconnect(Call call) {
         mPendingCallsToDisconnect.add(call);
+    }
+
+    @VisibleForTesting
+    public void addConnectionServiceRepositoryCache(ComponentName componentName,
+            UserHandle userHandle, ConnectionServiceWrapper service) {
+        mConnectionServiceRepository.setService(componentName, userHandle, service);
     }
 }
