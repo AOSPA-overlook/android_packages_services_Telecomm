@@ -1329,8 +1329,8 @@ public class CallsManager extends Call.ListenerBase
             if (call.isSelfManaged()) {
                 // Self managed calls will always be voip audio mode.
                 call.setIsVoipAudioMode(true);
-                call.setVisibleToInCallService(phoneAccountExtras != null
-                        && phoneAccountExtras.getBoolean(
+                call.setVisibleToInCallService(phoneAccountExtras == null
+                        || phoneAccountExtras.getBoolean(
                         PhoneAccount.EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE, true));
             } else {
                 // Incoming call is managed, the active call is self-managed and can't be held.
@@ -1595,8 +1595,8 @@ public class CallsManager extends Call.ListenerBase
             if (isSelfManaged) {
                 // Self-managed calls will ALWAYS use voip audio mode.
                 call.setIsVoipAudioMode(true);
-                call.setVisibleToInCallService(phoneAccountExtra != null
-                        && phoneAccountExtra.getBoolean(
+                call.setVisibleToInCallService(phoneAccountExtra == null
+                        || phoneAccountExtra.getBoolean(
                                 PhoneAccount.EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE, true));
             }
             call.setInitiatingUser(initiatingUser);
@@ -4390,7 +4390,8 @@ public class CallsManager extends Call.ListenerBase
         return false;
     }
 
-    private boolean makeRoomForOutgoingCall(Call call) {
+    @VisibleForTesting
+    public boolean makeRoomForOutgoingCall(Call call) {
         // Already room!
         if (!hasMaximumLiveCalls(call)) return true;
 
@@ -4404,6 +4405,13 @@ public class CallsManager extends Call.ListenerBase
             // If the call is already the foreground call, then we are golden.
             // This can happen after the user selects an account in the SELECT_PHONE_ACCOUNT
             // state since the call was already populated into the list.
+            return true;
+        }
+
+        // If the live call is stuck in a connecting state, then we should disconnect it in favor
+        // of the new outgoing call.
+        if (liveCall.getState() == CallState.CONNECTING) {
+            liveCall.disconnect("Force disconnect CONNECTING call.");
             return true;
         }
 
