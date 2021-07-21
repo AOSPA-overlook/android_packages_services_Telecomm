@@ -221,6 +221,7 @@ public class CallsManager extends Call.ListenerBase
     private static final int MAXIMUM_LIVE_CALLS = 1;
     private static final int MAXIMUM_HOLD_CALLS = 1;
     private static final int MAXIMUM_RINGING_CALLS = 1;
+    private static final int MAXIMUM_RINGING_CALLS_DSDA = 2;
     private static final int MAXIMUM_DIALING_CALLS = 1;
     private static final int MAXIMUM_OUTGOING_CALLS = 1;
     private static final int MAXIMUM_TOP_LEVEL_CALLS = 2;
@@ -4130,9 +4131,23 @@ public class CallsManager extends Call.ListenerBase
                 null /* phoneAccountHandle */, CallState.ON_HOLD);
     }
 
+    /**
+     * @return true if more than maximum managed allowed ringing calls exist.
+     * Maximum ringing calls in case of SS/DSDS is one and two in case of
+     * DSDA (one per phone account).
+     */
     private boolean hasMaximumManagedRingingCalls(Call exceptCall) {
-        return MAXIMUM_RINGING_CALLS <= getNumCallsWithState(false /* isSelfManaged */, exceptCall,
-                null /* phoneAccountHandle */, CallState.RINGING, CallState.ANSWERED);
+        // At any point we should have only one incoming call on a given PhoneAccount.
+        if (MAXIMUM_RINGING_CALLS <= getNumCallsWithState(false /* isSelfManaged */,
+                exceptCall, exceptCall.getTargetPhoneAccount(), CallState.RINGING,
+                CallState.ANSWERED)) {
+            return true;
+        }
+        // Check if we are exceeding overall maximum ringing call count.
+        int maxAllowedManagedRingingCalls = TelephonyManager.isConcurrentCallsPossible() ?
+                MAXIMUM_RINGING_CALLS_DSDA : MAXIMUM_RINGING_CALLS;
+        return maxAllowedManagedRingingCalls <= getNumCallsWithState(false /* isSelfManaged */,
+                exceptCall, null /*phoneAccountHandle*/, CallState.RINGING, CallState.ANSWERED);
     }
 
     private boolean hasMaximumSelfManagedRingingCalls(Call exceptCall,
