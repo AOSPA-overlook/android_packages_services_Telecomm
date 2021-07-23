@@ -3097,6 +3097,7 @@ public class CallsManager extends Call.ListenerBase
      */
     boolean holdActiveCallForNewCall(Call call) {
         Call activeCall = (Call) mConnectionSvrFocusMgr.getCurrentFocusCall();
+        Log.i(this, "holdActiveCallForNewCall, newCall: %s, activeCall: %s", call, activeCall);
         if (activeCall != null && activeCall != call) {
             if (canHold(activeCall)) {
                 activeCall.hold();
@@ -3152,6 +3153,7 @@ public class CallsManager extends Call.ListenerBase
 
     @VisibleForTesting
     public void markCallAsActive(Call call) {
+        Log.i(this, "markCallAsActive, isSelfManaged: " + call.isSelfManaged());
         if (call.isSelfManaged()) {
             // backward compatibility, the self-managed connection service will set the call state
             // to active directly. We should hold or disconnect the current active call based on the
