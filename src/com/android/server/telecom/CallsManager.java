@@ -833,7 +833,7 @@ public class CallsManager extends Call.ListenerBase
                     return;
                 }
             } else if (hasMaximumManagedDialingCalls(incomingCall) &&
-                    arePhoneAccountEquals(getDialingOrPullingCall().getTargetPhoneAccount(),
+                    arePhoneAccountsEqual(getDialingOrPullingCall().getTargetPhoneAccount(),
                     incomingCall.getTargetPhoneAccount())) {
                 if (shouldSilenceInsteadOfReject(incomingCall)) {
                     incomingCall.silence();
@@ -1737,6 +1737,7 @@ public class CallsManager extends Call.ListenerBase
                     boolean isRoomForCall = finalCall.isEmergencyCall() ?
                             makeRoomForOutgoingEmergencyCall(finalCall) :
                             makeRoomForOutgoingCall(finalCall);
+
                     if (!isRoomForCall) {
                         Call foregroundCall = getForegroundCall();
                         Log.d(CallsManager.this, "No more room for outgoing call %s ", finalCall);
@@ -2818,15 +2819,23 @@ public class CallsManager extends Call.ListenerBase
             String activeCallId = null;
             if (activeCall != null && !activeCall.isLocallyDisconnecting()) {
                 activeCallId = activeCall.getId();
+                Log.d(TAG, "unholdCall DSDA = " + isConcurrentCallsPossible());
                 if (canHold(activeCall)) {
-                    activeCall.hold("Swap to " + call.getId());
-                    Log.addEvent(activeCall, LogUtils.Events.SWAP, "To " + call.getId());
-                    Log.addEvent(call, LogUtils.Events.SWAP, "From " + activeCall.getId());
+                    if (!isConcurrentCallsPossible() || !areFromSameSource(activeCall, call)) {
+                        // Follow legacy behavior for non DSDA and different source/connection
+                        // service use case
+                        activeCall.hold("Swap to " + call.getId());
+                        Log.addEvent(activeCall, LogUtils.Events.SWAP, "To " + call.getId());
+                        Log.addEvent(call, LogUtils.Events.SWAP, "From " + activeCall.getId());
+                    } else {
+                        // This is dsda swap use case. Let ConnectionService handle hold
+                        // and unhold for this case
+                        Log.i(TAG, "unholdCall in DSDA across subs");
+                    }
                 } else {
                     // This call does not support hold. If it is from a different connection
-                    // service or connection manager, then disconnect it, otherwise invoke
-                    // call.hold() and allow the connection service or connection manager to handle
-                    // the situation.
+                    // service or connection manager, then disconnect it, otherwise allow the
+                    // connection service or connection manager to handle the situation.
                     if (!areFromSameSource(activeCall, call)) {
                         if (!activeCall.isEmergencyCall()) {
                             activeCall.disconnect("Swap to " + call.getId());
@@ -2837,7 +2846,7 @@ public class CallsManager extends Call.ListenerBase
                             // emergency call.
                             return;
                         }
-                    } else {
+                    } else if (!isConcurrentCallsPossible()) {
                         activeCall.hold("Swap to " + call.getId());
                     }
                 }
@@ -2912,7 +2921,7 @@ public class CallsManager extends Call.ListenerBase
 
         // Only one SIM PhoneAccount can be active at one time for DSDS. Only that SIM PhoneAccount
         // should be available if a call is already active on the SIM account.
-        if (!getTelephonyManager().isConcurrentCallsPossible()) {
+        if (!isConcurrentCallsPossible()) {
             List<PhoneAccountHandle> simAccounts =
                     mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser();
             PhoneAccountHandle ongoingCallAccount = null;
@@ -3096,6 +3105,12 @@ public class CallsManager extends Call.ListenerBase
         Call activeCall = (Call) mConnectionSvrFocusMgr.getCurrentFocusCall();
         Log.i(this, "holdActiveCallForNewCall, newCall: %s, activeCall: %s", call, activeCall);
         if (activeCall != null && activeCall != call) {
+            Log.d(TAG, "holdActiveCallForNewCall DSDA = " + isConcurrentCallsPossible());
+            if (isConcurrentCallsPossible() && !arePhoneAccountsEqual(
+                    call.getTargetPhoneAccount(), activeCall.getTargetPhoneAccount())) {
+                // For DSDA cross sub answer, let connection service handle this
+                return false;
+            }
             if (canHold(activeCall)) {
                 activeCall.hold();
                 return true;
@@ -3113,7 +3128,7 @@ public class CallsManager extends Call.ListenerBase
                 // Call C - Incoming
                 // Here we need to disconnect A prior to holding B so that C can be answered.
                 // This case is driven by telephony requirements ultimately.
-                Call heldCall = getHeldCallByConnectionService(call.getTargetPhoneAccount());
+                Call heldCall = getHeldCallByConnectionServiceAndPhoneAccount(call);
                 if (heldCall != null) {
                     heldCall.disconnect();
                     Log.i(this, "holdActiveCallForNewCall: Disconnect held call %s before "
@@ -5693,7 +5708,27 @@ public class CallsManager extends Call.ListenerBase
         mConnectionServiceRepository.setService(componentName, userHandle, service);
     }
 
-    private boolean arePhoneAccountEquals(PhoneAccountHandle pah1, PhoneAccountHandle pah2) {
+    /* Determines whether the two calls have the same target phone account */
+    private boolean arePhoneAccountsEqual(PhoneAccountHandle pah1, PhoneAccountHandle pah2) {
         return Objects.equals(pah1, pah2);
+    }
+
+    // Check for concurrent calls and package same as TelephonyConnectionService
+    private boolean isConcurrentCallsPossible() {
+        return getTelephonyManager().isConcurrentCallsPossible();
+    }
+
+    /* Returns the first HELD call on the same sub and managed by same ConnectionService */
+    private Call getHeldCallByConnectionServiceAndPhoneAccount(Call current) {
+        Optional<Call> heldCall = mCalls.stream()
+                .filter(call -> call != current
+                        && arePhoneAccountsEqual(call.getTargetPhoneAccount(),
+                        current.getTargetPhoneAccount())
+                        && PhoneAccountHandle.areFromSamePackage(call.getTargetPhoneAccount(),
+                                current.getTargetPhoneAccount())
+                        && call.getParentCall() == null
+                        && call.getState() == CallState.ON_HOLD)
+                .findFirst();
+        return heldCall.isPresent() ? heldCall.get() : null;
     }
 }
