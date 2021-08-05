@@ -396,8 +396,6 @@ public class CallsManager extends Call.ListenerBase
 
     private boolean mCanAddCall = true;
 
-    private int mMaxNumberOfSimultaneouslyActiveSims = -1;
-
     private Runnable mStopTone;
 
     private LinkedList<HandlerThread> mGraphHandlerThreads;
@@ -2910,13 +2908,9 @@ public class CallsManager extends Call.ListenerBase
                     getEmergencyCallOnlyPhoneAccounts(handle.getScheme(), user);
         }
 
-        if (mMaxNumberOfSimultaneouslyActiveSims < 0) {
-            mMaxNumberOfSimultaneouslyActiveSims =
-                    getTelephonyManager().getMaxNumberOfSimultaneouslyActiveSims();
-        }
         // Only one SIM PhoneAccount can be active at one time for DSDS. Only that SIM PhoneAccount
         // should be available if a call is already active on the SIM account.
-        if (mMaxNumberOfSimultaneouslyActiveSims == 1) {
+        if (!getTelephonyManager().isConcurrentCallsPossible()) {
             List<PhoneAccountHandle> simAccounts =
                     mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser();
             PhoneAccountHandle ongoingCallAccount = null;
