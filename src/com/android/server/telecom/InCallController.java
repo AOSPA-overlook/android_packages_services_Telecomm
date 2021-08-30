@@ -35,6 +35,7 @@ import android.content.ServiceConnection;
 import android.content.pm.PackageManager;
 import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
+import android.hardware.SensorPrivacyManager;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
@@ -45,7 +46,6 @@ import android.os.RemoteException;
 import android.os.Trace;
 import android.os.UserHandle;
 import android.os.UserManager;
-import android.provider.DeviceConfig;
 import android.telecom.CallAudioState;
 import android.telecom.ConnectionService;
 import android.telecom.InCallService;
@@ -282,7 +282,16 @@ public class InCallController extends CallsManagerListenerBase implements
         @Override
         public int connect(Call call) {
             if (mIsConnected) {
-                Log.addEvent(call, LogUtils.Events.INFO, "Already connected, ignoring request.");
+                Log.addEvent(call, LogUtils.Events.INFO, "Already connected, ignoring request: "
+                        + mInCallServiceInfo);
+                if (call != null) {
+                    // Track the call if we don't already know about it.
+                    addCall(call);
+
+                    // Notify this new added call
+                    sendCallToService(call, mInCallServiceInfo,
+                            mInCallServices.get(mInCallServiceInfo));
+                }
                 return CONNECTION_SUCCEEDED;
             }
 
@@ -979,6 +988,7 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private final Context mContext;
     private final AppOpsManager mAppOpsManager;
+    private final SensorPrivacyManager mSensorPrivacyManager;
     private final TelecomSystem.SyncRoot mLock;
     private final CallsManager mCallsManager;
     private final SystemStateHelper mSystemStateHelper;
@@ -1035,6 +1045,7 @@ public class InCallController extends CallsManagerListenerBase implements
             CarModeTracker carModeTracker, ClockProxy clockProxy) {
         mContext = context;
         mAppOpsManager = context.getSystemService(AppOpsManager.class);
+        mSensorPrivacyManager = context.getSystemService(SensorPrivacyManager.class);
         mLock = lock;
         mCallsManager = callsManager;
         mSystemStateHelper = systemStateHelper;
@@ -1390,6 +1401,7 @@ public class InCallController extends CallsManagerListenerBase implements
             if (shouldStart) {
                 mAppOpsManager.startOp(AppOpsManager.OP_PHONE_CALL_CAMERA, myUid(),
                         mContext.getOpPackageName(), false, null, null);
+                mSensorPrivacyManager.showSensorUseDialog(SensorPrivacyManager.Sensors.CAMERA);
             }
         } else {
             boolean hadCall = !mCallsUsingCamera.isEmpty();
@@ -1865,34 +1877,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 "calls", calls.size(), info.getComponentName());
         int numCallsSent = 0;
         for (Call call : calls) {
-            try {
-                if ((call.isSelfManaged() && (!info.isSelfManagedCallsSupported()
-                        || !call.visibleToInCallService())) ||
-                        (call.isExternalCall() && !info.isExternalCallsSupported())) {
-                    continue;
-                }
-
-                // Only send the RTT call if it's a UI in-call service
-                boolean includeRttCall = false;
-                if (mInCallServiceConnection != null) {
-                    includeRttCall = info.equals(mInCallServiceConnection.getInfo());
-                }
-
-                // Track the call if we don't already know about it.
-                addCall(call);
-                numCallsSent += 1;
-                ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
-                        call,
-                        true /* includeVideoProvider */,
-                        mCallsManager.getPhoneAccountRegistrar(),
-                        info.isExternalCallsSupported(),
-                        includeRttCall,
-                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
-                        info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
-                inCallService.addCall(sanitizeParcelableCallForService(info, parcelableCall));
-                updateCallTracking(call, info, true /* isAdd */);
-            } catch (RemoteException ignored) {
-            }
+            numCallsSent += sendCallToService(call, info, inCallService);
         }
         try {
             inCallService.onCallAudioStateChanged(mCallsManager.getAudioState());
@@ -1900,12 +1885,45 @@ public class InCallController extends CallsManagerListenerBase implements
         } catch (RemoteException ignored) {
         }
         // Don't complete the binding future for non-ui incalls
-        if (info.getType() != IN_CALL_SERVICE_TYPE_NON_UI) {
+        if (info.getType() != IN_CALL_SERVICE_TYPE_NON_UI && !mBindingFuture.isDone()) {
             mBindingFuture.complete(true);
         }
 
         Log.i(this, "%s calls sent to InCallService.", numCallsSent);
         return true;
+    }
+
+    private int sendCallToService(Call call, InCallServiceInfo info,
+            IInCallService inCallService) {
+        try {
+            if ((call.isSelfManaged() && (!info.isSelfManagedCallsSupported()
+                    || !call.visibleToInCallService())) ||
+                    (call.isExternalCall() && !info.isExternalCallsSupported())) {
+                return 0;
+            }
+
+            // Only send the RTT call if it's a UI in-call service
+            boolean includeRttCall = false;
+            if (mInCallServiceConnection != null) {
+                includeRttCall = info.equals(mInCallServiceConnection.getInfo());
+            }
+
+            // Track the call if we don't already know about it.
+            addCall(call);
+            ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
+                    call,
+                    true /* includeVideoProvider */,
+                    mCallsManager.getPhoneAccountRegistrar(),
+                    info.isExternalCallsSupported(),
+                    includeRttCall,
+                    info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
+                            info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
+            inCallService.addCall(sanitizeParcelableCallForService(info, parcelableCall));
+            updateCallTracking(call, info, true /* isAdd */);
+            return 1;
+        } catch (RemoteException ignored) {
+        }
+        return 0;
     }
 
     /**
@@ -2261,6 +2279,7 @@ public class InCallController extends CallsManagerListenerBase implements
             if (mIsCallUsingMicrophone) {
                 mAppOpsManager.startOp(AppOpsManager.OP_PHONE_CALL_MICROPHONE, myUid(),
                         mContext.getOpPackageName(), false, null, null);
+                mSensorPrivacyManager.showSensorUseDialog(SensorPrivacyManager.Sensors.MICROPHONE);
             } else {
                 mAppOpsManager.finishOp(AppOpsManager.OP_PHONE_CALL_MICROPHONE, myUid(),
                         mContext.getOpPackageName(), null);

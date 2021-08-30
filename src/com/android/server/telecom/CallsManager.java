@@ -221,6 +221,7 @@ public class CallsManager extends Call.ListenerBase
     private static final int MAXIMUM_LIVE_CALLS = 1;
     private static final int MAXIMUM_HOLD_CALLS = 1;
     private static final int MAXIMUM_RINGING_CALLS = 1;
+    private static final int MAXIMUM_RINGING_CALLS_DSDA = 2;
     private static final int MAXIMUM_DIALING_CALLS = 1;
     private static final int MAXIMUM_OUTGOING_CALLS = 1;
     private static final int MAXIMUM_TOP_LEVEL_CALLS = 2;
@@ -394,8 +395,6 @@ public class CallsManager extends Call.ListenerBase
             };
 
     private boolean mCanAddCall = true;
-
-    private int mMaxNumberOfSimultaneouslyActiveSims = -1;
 
     private Runnable mStopTone;
 
@@ -2909,13 +2908,9 @@ public class CallsManager extends Call.ListenerBase
                     getEmergencyCallOnlyPhoneAccounts(handle.getScheme(), user);
         }
 
-        if (mMaxNumberOfSimultaneouslyActiveSims < 0) {
-            mMaxNumberOfSimultaneouslyActiveSims =
-                    getTelephonyManager().getMaxNumberOfSimultaneouslyActiveSims();
-        }
         // Only one SIM PhoneAccount can be active at one time for DSDS. Only that SIM PhoneAccount
         // should be available if a call is already active on the SIM account.
-        if (mMaxNumberOfSimultaneouslyActiveSims == 1) {
+        if (!getTelephonyManager().isConcurrentCallsPossible()) {
             List<PhoneAccountHandle> simAccounts =
                     mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser();
             PhoneAccountHandle ongoingCallAccount = null;
@@ -3209,7 +3204,8 @@ public class CallsManager extends Call.ListenerBase
         // If a call diagnostic service is in use, we will log the original telephony-provided
         // disconnect cause, inform the CDS of the disconnection, and then chain the update of the
         // call state until AFTER the CDS reports it's result back.
-        if (oldState == CallState.ACTIVE && disconnectCause.getCode() != DisconnectCause.MISSED
+        if ((oldState == CallState.ACTIVE || oldState == CallState.DIALING)
+                && disconnectCause.getCode() != DisconnectCause.MISSED
                 && mCallDiagnosticServiceController.isConnected()
                 && mCallDiagnosticServiceController.onCallDisconnected(call, disconnectCause)) {
             Log.i(this, "markCallAsDisconnected; callid=%s, postingToFuture.", call.getId());
@@ -4132,9 +4128,23 @@ public class CallsManager extends Call.ListenerBase
                 null /* phoneAccountHandle */, CallState.ON_HOLD);
     }
 
+    /**
+     * @return true if more than maximum managed allowed ringing calls exist.
+     * Maximum ringing calls in case of SS/DSDS is one and two in case of
+     * DSDA (one per phone account).
+     */
     private boolean hasMaximumManagedRingingCalls(Call exceptCall) {
-        return MAXIMUM_RINGING_CALLS <= getNumCallsWithState(false /* isSelfManaged */, exceptCall,
-                null /* phoneAccountHandle */, CallState.RINGING, CallState.ANSWERED);
+        // At any point we should have only one incoming call on a given PhoneAccount.
+        if (MAXIMUM_RINGING_CALLS <= getNumCallsWithState(false /* isSelfManaged */,
+                exceptCall, exceptCall.getTargetPhoneAccount(), CallState.RINGING,
+                CallState.ANSWERED)) {
+            return true;
+        }
+        // Check if we are exceeding overall maximum ringing call count.
+        int maxAllowedManagedRingingCalls = TelephonyManager.isConcurrentCallsPossible() ?
+                MAXIMUM_RINGING_CALLS_DSDA : MAXIMUM_RINGING_CALLS;
+        return maxAllowedManagedRingingCalls <= getNumCallsWithState(false /* isSelfManaged */,
+                exceptCall, null /*phoneAccountHandle*/, CallState.RINGING, CallState.ANSWERED);
     }
 
     private boolean hasMaximumSelfManagedRingingCalls(Call exceptCall,
