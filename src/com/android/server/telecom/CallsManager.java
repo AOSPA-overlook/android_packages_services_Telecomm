@@ -832,7 +832,9 @@ public class CallsManager extends Call.ListenerBase
                     autoMissCallAndLog(incomingCall, result);
                     return;
                 }
-            } else if (hasMaximumManagedDialingCalls(incomingCall)) {
+            } else if (hasMaximumManagedDialingCalls(incomingCall) &&
+                    arePhoneAccountEquals(getDialingOrPullingCall().getTargetPhoneAccount(),
+                    incomingCall.getTargetPhoneAccount())) {
                 if (shouldSilenceInsteadOfReject(incomingCall)) {
                     incomingCall.silence();
                 } else {
@@ -3509,6 +3511,11 @@ public class CallsManager extends Call.ListenerBase
         return getFirstCallWithState(CallState.DIALING);
     }
 
+    /** Helper function to retrieve the dialing or pulling call */
+    private Call getDialingOrPullingCall() {
+        return getFirstCallWithState(CallState.DIALING, CallState.PULLING);
+    }
+
     @VisibleForTesting
     public Call getHeldCall() {
         return getFirstCallWithState(CallState.ON_HOLD);
@@ -5684,5 +5691,9 @@ public class CallsManager extends Call.ListenerBase
     public void addConnectionServiceRepositoryCache(ComponentName componentName,
             UserHandle userHandle, ConnectionServiceWrapper service) {
         mConnectionServiceRepository.setService(componentName, userHandle, service);
+    }
+
+    private boolean arePhoneAccountEquals(PhoneAccountHandle pah1, PhoneAccountHandle pah2) {
+        return Objects.equals(pah1, pah2);
     }
 }
