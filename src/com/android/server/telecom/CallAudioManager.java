@@ -747,12 +747,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
                     mActiveDialingOrConnectingCalls.iterator().next() : possibleConnectingCall;
         } else if (mRingingCalls.size() > 0) {
             mForegroundCall = mRingingCalls.iterator().next();
-            // If there is more than one incoming call, we stop and start the ringtone
-            // when foreground ringing call changes, e.g. the first incoming call is rejected.
-            if (mForegroundCall != oldForegroundCall) {
-                stopRinging();
-                startRinging();
-            }
         } else if (mHoldingCalls.size() > 0) {
             mForegroundCall = mHoldingCalls.iterator().next();
         } else {
