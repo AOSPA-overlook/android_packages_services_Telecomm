@@ -65,6 +65,10 @@
         Your call has been disconnected due to an emergency call being placed.
     </string>
 
+    <!-- Disconnected call notification label/description, used when the call has been automatically
+         disconnected by telecom as there is already a dialing call.-->
+    <string name="notification_disconnectedDialing_message">Cannot place a call as another outgoing call is already dialing."</string>
+
     <!-- Title for the persistent notification presented when an app has requested that a call
          be put into the background so that the app can access the audio from the call
          [CHAR LIMIT=40] -->
