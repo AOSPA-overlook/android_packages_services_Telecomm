@@ -85,6 +85,7 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 import org.codeaurora.ims.QtiCallConstants;
 /**
@@ -843,10 +844,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     public void initAnalytics() {
-        initAnalytics(null);
+        initAnalytics(null, null);
     }
 
-    public void initAnalytics(String callingPackage) {
+    public void initAnalytics(String callingPackage, String extraCreationLogs) {
         int analyticsDirection;
         switch (mCallDirection) {
             case CALL_DIRECTION_OUTGOING:
@@ -862,7 +863,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
         mAnalytics = Analytics.initiateCallAnalytics(mId, analyticsDirection);
         mAnalytics.setCallIsEmergency(mIsEmergencyCall);
-        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage);
+        Log.addEvent(this, LogUtils.Events.CREATED, callingPackage + ";" + extraCreationLogs);
     }
 
     public Analytics.CallInfo getAnalytics() {
@@ -3212,6 +3213,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     void setConferenceableCalls(List<Call> conferenceableCalls) {
         mConferenceableCalls.clear();
         mConferenceableCalls.addAll(conferenceableCalls);
+        String confCallIds = "";
+        if (!conferenceableCalls.isEmpty()) {
+            confCallIds = conferenceableCalls.stream()
+                    .map(c -> c.getId())
+                    .collect(Collectors.joining(","));
+        }
+        Log.addEvent(this, LogUtils.Events.CONF_CALLS_CHANGED, confCallIds);
 
         for (Listener l : mListeners) {
             l.onConferenceableCallsChanged(this);
