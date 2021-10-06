@@ -410,6 +410,10 @@ public class CallsManager extends Call.ListenerBase
     private Call mPendingMOEmerCall = null;
     private Call mDisconnectingCall = null;
 
+    // Used to indicate that an error dialog should be shown if set to true
+    // Stored within intent extras and should be removed once the dialog is shown
+    private final String EXTRA_KEY_DISPLAY_ERROR_DIALOG = "EXTRA_KEY_DISPLAY_ERROR_DIALOG";
+
     /**
      * Listener to PhoneAccountRegistrar events.
      */
@@ -4475,6 +4479,16 @@ public class CallsManager extends Call.ListenerBase
                         + " of new outgoing call.");
                 return true;
             }
+            CharSequence text = mContext.getText(R.string.notification_disconnectedDialing_message);
+            call.setOverrideDisconnectCauseCode(new DisconnectCause(DisconnectCause.ERROR, text,
+                    text, "Another outgoing call is already being dialed.",
+                    ToneGenerator.TONE_PROP_PROMPT));
+            Bundle extras = call.getIntentExtras();
+            if (extras == null) {
+                extras = new Bundle();
+                call.setIntentExtras(extras);
+            }
+            extras.putBoolean(EXTRA_KEY_DISPLAY_ERROR_DIALOG, true);
             return false;
         }
 
@@ -5034,8 +5048,12 @@ public class CallsManager extends Call.ListenerBase
     * @param call The call.
     */
     private void maybeShowErrorDialogOnDisconnect(Call call) {
+        Bundle extras = call.getIntentExtras();
         if (call.getState() == CallState.DISCONNECTED && (isPotentialMMICode(call.getHandle())
-                || isPotentialInCallMMICode(call.getHandle())) && !mCalls.contains(call)) {
+                || isPotentialInCallMMICode(call.getHandle()) ||
+                (extras != null && extras.getBoolean(EXTRA_KEY_DISPLAY_ERROR_DIALOG, false))) &&
+                !mCalls.contains(call)) {
+            extras.remove(EXTRA_KEY_DISPLAY_ERROR_DIALOG);
             DisconnectCause disconnectCause = call.getDisconnectCause();
             if (!TextUtils.isEmpty(disconnectCause.getDescription()) && (disconnectCause.getCode()
                     == DisconnectCause.ERROR)) {
