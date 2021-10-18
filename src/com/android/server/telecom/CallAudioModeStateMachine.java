@@ -161,6 +161,7 @@ public class CallAudioModeStateMachine extends StateMachine {
 
     public static final int RINGER_MODE_CHANGE = 5001;
     public static final int CRS_CHANGE_SILENCE = 5002;
+    public static final int RINGING_CALLS_CHANGED = 5003;
 
     // Used to indicate that Telecom is done doing things to the AudioManager and that it's safe
     // to release focus for other apps to take over.
@@ -189,6 +190,7 @@ public class CallAudioModeStateMachine extends StateMachine {
         put(RINGER_MODE_CHANGE, "RINGER_MODE_CHANGE");
         put(AUDIO_OPERATIONS_COMPLETE, "AUDIO_OPERATIONS_COMPLETE");
         put(CRS_CHANGE_SILENCE, "CRS_CHANGE_SILENCE");
+        put(RINGING_CALLS_CHANGED, "RINGING_CALLS_CHANGED");
 
         put(RUN_RUNNABLE, "RUN_RUNNABLE");
     }};
@@ -473,6 +475,11 @@ public class CallAudioModeStateMachine extends StateMachine {
                     Log.i(LOG_TAG, "CRS state, received CRS_CHANGE_SILENCE");
                     silenceCrs();
                     return HANDLED;
+                case RINGING_CALLS_CHANGED:
+                    Log.i(LOG_TAG, "CRS RINGING state, received RINGING_CALLS_CHANGED");
+                    BaseState newDestState = calculateProperStateFromArgs(args);
+                    transitionTo(newDestState);
+                    return HANDLED;
                 default:
                     // The forced focus switch commands are handled by BaseState.
                     return NOT_HANDLED;
@@ -572,6 +579,11 @@ public class CallAudioModeStateMachine extends StateMachine {
                 case AUDIO_OPERATIONS_COMPLETE:
                     Log.w(LOG_TAG, "Should not be seeing AUDIO_OPERATIONS_COMPLETE in a focused"
                             + " state");
+                    return HANDLED;
+                case RINGING_CALLS_CHANGED:
+                    Log.i(LOG_TAG, "RINGING state, received RINGING_CALLS_CHANGED");
+                    BaseState newDestState = calculateProperStateFromArgs(args);
+                    transitionTo(newDestState);
                     return HANDLED;
                 default:
                     // The forced focus switch commands are handled by BaseState.
