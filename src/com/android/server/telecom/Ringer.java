@@ -232,14 +232,14 @@ public class Ringer {
         mBlockOnRingingFuture = future;
     }
 
-    public boolean startPlayCrs(Call foregroundCall, boolean isHfpDeviceAttached) {
+    public boolean startPlayingCrs(Call foregroundCall, boolean isHfpDeviceAttached) {
         if (foregroundCall == null) {
-            Log.wtf(this, "startRinging called with null foreground call.");
+            Log.wtf(this, "startPlayingCrs called with null foreground call.");
             return false;
         }
 
         boolean isCrsCall = foregroundCall.isCrsCall();
-        Log.i(this, "startPlayCrs called with video CRS is :: " + isCrsCall);
+        Log.i(this, "startPlayingCrs called with video CRS is :: " + isCrsCall);
         if (!isCrsCall) {
             return false;
         }
@@ -582,7 +582,7 @@ public class Ringer {
         }
     }
 
-    private void stopPlayCrs() {
+    public void stopPlayingCrs() {
         if (mRingingCall != null) {
             Log.addEvent(mRingingCall, LogUtils.Events.STOP_RINGER);
             AudioManager audioManager =  mContext.getSystemService(AudioManager.class);
@@ -606,11 +606,6 @@ public class Ringer {
     }
 
     public void stopRinging() {
-        if (mRingingCall != null && mRingingCall.isCrsCall()) {
-            stopPlayCrs();
-            return;
-        }
-
         if (mRingingCall != null) {
             Log.addEvent(mRingingCall, LogUtils.Events.STOP_RINGER);
             mRingingCall = null;

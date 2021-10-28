@@ -184,6 +184,7 @@ public class CallsManager extends Call.ListenerBase
         void onConferenceStateChanged(Call call, boolean isConference);
         void onCdmaConferenceSwap(Call call);
         void onSetCamera(Call call, String cameraId);
+        void onCrsFallbackLocalRinging(Call call);
     }
 
     /** Interface used to define the action which is executed delay under some condition. */
@@ -411,6 +412,7 @@ public class CallsManager extends Call.ListenerBase
     private Call mPendingMOEmerCall = null;
     private Call mDisconnectingCall = null;
 
+    private String mCrsCallId = null;
     // Used to indicate that an error dialog should be shown if set to true
     // Stored within intent extras and should be removed once the dialog is shown
     private final String EXTRA_KEY_DISPLAY_ERROR_DIALOG = "EXTRA_KEY_DISPLAY_ERROR_DIALOG";
@@ -2883,12 +2885,40 @@ public class CallsManager extends Call.ListenerBase
         handleCallTechnologyChange(c);
         handleChildAddressChange(c);
         updateCanAddCall();
+        maybeUpdateVideoCrsCall(c);
     }
 
     @Override
     public void onRemoteRttRequest(Call call, int requestId) {
         Log.i(this, "onRemoteRttRequest: call %s", call.getId());
         playRttUpgradeToneForCall(call);
+    }
+
+    /**
+     * Updates video CRS information if it is a CRS call and handling fallback
+     * to play local ringing when CRS audio/video RTP timeout from network.
+     */
+    private void maybeUpdateVideoCrsCall(Call c) {
+        if (c == null || (c.getState() != CallState.RINGING
+                    && c.getState() != CallState.SIMULATED_RINGING)) {
+            return;
+        }
+        boolean isCrs = c.isCrsCall();
+        String callId = c.getId();
+        if (isCrs) {
+            mCrsCallId = callId;
+            return;
+        }
+
+        Log.v(this, "maybeUpdateVideoCrsCall : isCrs = %b, CrsCallId =%s,"
+                + "currentCallId=%s", isCrs, mCrsCallId, callId);
+        if(!callId.equals(mCrsCallId)) {
+            return;
+        }
+        mCrsCallId = null;
+        for (CallsManagerListener listener : mListeners) {
+            listener.onCrsFallbackLocalRinging(c);
+        }
     }
 
     public void playRttUpgradeToneForCall(Call call) {
@@ -3780,6 +3810,7 @@ public class CallsManager extends Call.ListenerBase
         updateCanAddCall();
         updateHasActiveRttCall();
         updateExternalCallCanPullSupport();
+        maybeUpdateVideoCrsCall(call);
         // onCallAdded for calls which immediately take the foreground (like the first call).
         for (CallsManagerListener listener : mListeners) {
             if (LogUtils.SYSTRACE_DEBUG) {

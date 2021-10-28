@@ -108,4 +108,8 @@ public class CallsManagerListenerBase implements CallsManager.CallsManagerListen
     @Override
     public void onSetCamera(Call call, String cameraId) {
     }
+
+    @Override
+    public void onCrsFallbackLocalRinging(Call call) {
+    }
 }
