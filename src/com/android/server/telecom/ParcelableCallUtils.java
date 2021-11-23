@@ -508,8 +508,8 @@ public class ParcelableCallUtils {
         Connection.CAPABILITY_TRANSFER_CONSULTATIVE,
         android.telecom.Call.Details.CAPABILITY_TRANSFER_CONSULTATIVE,
 
-        Connection.CAPABILITY_SUPPORTS_RTT_REMOTE,
-        android.telecom.Call.Details.CAPABILITY_SUPPORTS_RTT_REMOTE
+        Connection.CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT,
+        android.telecom.Call.Details.CAPABILITY_REMOTE_PARTY_SUPPORTS_RTT
     };
 
     private static int convertConnectionToCallCapabilities(int connectionCapabilities) {
