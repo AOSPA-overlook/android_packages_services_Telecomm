@@ -123,6 +123,11 @@ public class ComponentContextFixture implements TestFixture<Context> {
         }
 
         @Override
+        public Context createContextAsUser(UserHandle userHandle, int flags) {
+            return this;
+        }
+
+        @Override
         public String getPackageName() {
             return "com.android.server.telecom.tests";
         }
@@ -327,8 +332,19 @@ public class ComponentContextFixture implements TestFixture<Context> {
         }
 
         @Override
+        public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, int flags) {
+            return null;
+        }
+
+        @Override
         public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter,
                 String broadcastPermission, Handler scheduler) {
+            return null;
+        }
+
+        @Override
+        public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter,
+                String broadcastPermission, Handler scheduler, int flags) {
             return null;
         }
 

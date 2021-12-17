@@ -1697,11 +1697,16 @@ public class InCallController extends CallsManagerListenerBase implements
         }
 
         PackageManager packageManager = mContext.getPackageManager();
+        Context userContext = mContext.createContextAsUser(mCallsManager.getCurrentUserHandle(),
+                0 /* flags */);
+        PackageManager userPackageManager = userContext != null ?
+                userContext.getPackageManager() : packageManager;
         for (ResolveInfo entry : packageManager.queryIntentServicesAsUser(
                 serviceIntent,
                 PackageManager.GET_META_DATA | PackageManager.MATCH_DISABLED_COMPONENTS,
                 mCallsManager.getCurrentUserHandle().getIdentifier())) {
             ServiceInfo serviceInfo = entry.serviceInfo;
+
             if (serviceInfo != null) {
                 boolean isExternalCallsSupported = serviceInfo.metaData != null &&
                         serviceInfo.metaData.getBoolean(
@@ -1719,7 +1724,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 }
 
                 boolean isEnabled = isServiceEnabled(foundComponentName,
-                        serviceInfo, packageManager);
+                        serviceInfo, userPackageManager);
                 boolean isRequestedType;
                 if (requestedType == IN_CALL_SERVICE_TYPE_INVALID) {
                     isRequestedType = true;
@@ -1738,6 +1743,10 @@ public class InCallController extends CallsManagerListenerBase implements
 
     private boolean isServiceEnabled(ComponentName componentName,
             ServiceInfo serviceInfo, PackageManager packageManager) {
+        if (packageManager == null) {
+            return serviceInfo.isEnabled();
+        }
+
         int componentEnabledState = packageManager.getComponentEnabledSetting(componentName);
 
         if (componentEnabledState == PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
