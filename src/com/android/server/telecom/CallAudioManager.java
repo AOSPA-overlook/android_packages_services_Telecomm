@@ -149,6 +149,16 @@ public class CallAudioManager extends CallsManagerListenerBase {
     }
 
     @Override
+    public void onCrsFallbackLocalRinging(Call call) {
+        if (!mIsInCrsMode || mIsSilenced || call != mForegroundCall) {
+            return;
+        }
+        Log.i(LOG_TAG, "onCrsFallbackLocalRinging :: Switch to play local ringing");
+        mIsInCrsMode = false;
+        onRingingCallChanged();
+    }
+
+    @Override
     public void onCallAdded(Call call) {
         if (shouldIgnoreCallForAudio(call)) {
             return; // Don't do audio handling for calls in a conference, or external calls.
@@ -493,13 +503,23 @@ public class CallAudioManager extends CallsManagerListenerBase {
     @VisibleForTesting
     public boolean startRinging() {
         synchronized (mCallsManager.getLock()) {
-            if (mIsInCrsMode) {
-                Log.i(this, "Start to play CRS.");
-                return mRinger.startPlayCrs(mForegroundCall,
-                        mCallAudioRouteStateMachine.isHfpDeviceAvailable());
-            }
             return mRinger.startRinging(mForegroundCall,
                     mCallAudioRouteStateMachine.isHfpDeviceAvailable());
+        }
+    }
+
+    public boolean startPlayingCrs() {
+        Log.i(this, "Start playing CRS audio.");
+        synchronized (mCallsManager.getLock()) {
+            return mRinger.startPlayingCrs(mForegroundCall,
+                    mCallAudioRouteStateMachine.isHfpDeviceAvailable());
+        }
+    }
+
+    public void stopPlayingCrs() {
+        Log.i(this, "Stop playing CRS audio.");
+        synchronized (mCallsManager.getLock()) {
+            mRinger.stopPlayingCrs();
         }
     }
 
