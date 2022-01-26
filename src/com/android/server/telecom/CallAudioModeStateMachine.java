@@ -379,7 +379,7 @@ public class CallAudioModeStateMachine extends StateMachine {
                 return;
             }
 
-            if (mCallAudioManager.startRinging()) {
+            if (mCallAudioManager.startPlayingCrs()) {
                 Log.i(LOG_TAG, "RINGING state, try start video CRS");
                 mAudioManager.requestAudioFocusForCall(AudioManager.STREAM_VOICE_CALL,
                         AudioManager.AUDIOFOCUS_GAIN_TRANSIENT);
@@ -412,7 +412,7 @@ public class CallAudioModeStateMachine extends StateMachine {
         @Override
         public void exit() {
             // Audio mode and audio stream will be set by the next state.
-            mCallAudioManager.stopRinging();
+            mCallAudioManager.stopPlayingCrs();
             mHasFocus = false;
         }
 
