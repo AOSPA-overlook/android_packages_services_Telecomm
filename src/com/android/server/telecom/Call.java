@@ -1011,6 +1011,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             case TelecomManager.PRESENTATION_UNKNOWN:
                 s.append("Unknown");
                 break;
+            case TelecomManager.PRESENTATION_UNAVAILABLE:
+                s.append("Unavailable");
+                break;
             default:
                 s.append("<undefined>");
         }
