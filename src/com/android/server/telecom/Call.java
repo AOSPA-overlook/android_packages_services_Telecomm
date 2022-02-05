@@ -167,6 +167,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         void onCallSwitchFailed(Call call);
         void onConnectionEvent(Call call, String event, Bundle extras);
         void onExternalCallChanged(Call call, boolean isExternalCall);
+        void onTetheredCallChanged(Call call, boolean isTetheredCall);
         void onRttInitiationFailure(Call call, int reason);
         void onRemoteRttRequest(Call call, int requestId);
         void onHandoverRequested(Call call, PhoneAccountHandle handoverTo, int videoState,
@@ -253,7 +254,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         @Override
         public void onConnectionEvent(Call call, String event, Bundle extras) {}
         @Override
-        public void onExternalCallChanged(Call call, boolean isExternalCall) {}
+        public void onExternalCallChanged(Call call, boolean isExternalCall)
+        {}
+        @Override
+        public void onTetheredCallChanged(Call call, boolean isTetheredCall) {}
         @Override
         public void onRttInitiationFailure(Call call, int reason) {}
         @Override
@@ -1944,7 +1948,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return stripUnsupportedCapabilities(mConnectionCapabilities);
     }
 
-    int getConnectionProperties() {
+    public int getConnectionProperties() {
         return mConnectionProperties;
     }
 
@@ -2043,8 +2047,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                     == Connection.PROPERTY_IS_EXTERNAL_CALL;
             boolean isExternal = (connectionProperties & Connection.PROPERTY_IS_EXTERNAL_CALL)
                     == Connection.PROPERTY_IS_EXTERNAL_CALL;
+            boolean wasTethered = (previousProperties & Connection.PROPERTY_TETHERED_CALL)
+                    == Connection.PROPERTY_TETHERED_CALL;
+            boolean isTethered = (connectionProperties & Connection.PROPERTY_TETHERED_CALL)
+                    == Connection.PROPERTY_TETHERED_CALL;
             if (wasExternal != isExternal) {
-                Log.v(this, "setConnectionProperties: external call changed isExternal = %b",
+                Log.v(this, "setConnectionProperties: external call changed isExternal = %b, ",
                         isExternal);
                 Log.addEvent(this, LogUtils.Events.IS_EXTERNAL, isExternal);
                 if (isExternal) {
@@ -2055,6 +2063,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 }
                 for (Listener l : mListeners) {
                     l.onExternalCallChanged(this, isExternal);
+                }
+            }
+            if (wasTethered != isTethered) {
+                Log.v(this, "setConnectionProperties: tethered call changed isTethered = %b, ",
+                        isTethered);
+                Log.addEvent(this, LogUtils.Events.IS_TETHERED, isTethered);
+                for (Listener l : mListeners) {
+                    l.onTetheredCallChanged(this, isTethered);
                 }
             }
 
