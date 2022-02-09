@@ -72,6 +72,7 @@ import android.provider.CallLog.Calls;
 import android.provider.Settings;
 import android.sysprop.TelephonyProperties;
 import android.telecom.CallAudioState;
+import android.telecom.CallEndpoint;
 import android.telecom.CallScreeningService;
 import android.telecom.CallerInfo;
 import android.telecom.Conference;
@@ -379,6 +380,7 @@ public class CallsManager extends Call.ListenerBase
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private final EmergencyCallHelper mEmergencyCallHelper;
     private final RoleManagerAdapter mRoleManagerAdapter;
+    private final CallEndpointController mCallEndpointController;
 
     private final ConnectionServiceFocusManager.CallsManagerRequester mRequester =
             new ConnectionServiceFocusManager.CallsManagerRequester() {
@@ -514,7 +516,8 @@ public class CallsManager extends Call.ListenerBase
             InCallControllerFactory inCallControllerFactory,
             CallDiagnosticServiceController callDiagnosticServiceController,
             RoleManagerAdapter roleManagerAdapter,
-            ToastFactory toastFactory) {
+            ToastFactory toastFactory,
+            CallEndpointControllerFactory callEndpointControllerFactory) {
         mContext = context;
         mLock = lock;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
@@ -569,6 +572,7 @@ public class CallsManager extends Call.ListenerBase
         mInCallController = inCallControllerFactory.create(context, mLock, this,
                 systemStateHelper, defaultDialerCache, mTimeoutsAdapter,
                 emergencyCallHelper);
+        mCallEndpointController = callEndpointControllerFactory.create(mLock, this);
         mCallDiagnosticServiceController = callDiagnosticServiceController;
         mCallDiagnosticServiceController.setInCallTonePlayerFactory(playerFactory);
         mRinger = new Ringer(playerFactory, context, systemSettingsUtil, asyncRingtonePlayer,
@@ -657,6 +661,10 @@ public class CallsManager extends Call.ListenerBase
         return mCallDiagnosticServiceController;
     }
 
+    public CallEndpointController getCallEndpointController() {
+        return mCallEndpointController;
+    }
+
     @Override
     public void onSuccessfulOutgoingCall(Call call, int callState) {
         Log.v(this, "onSuccessfulOutgoingCall, %s", call);
@@ -667,6 +675,14 @@ public class CallsManager extends Call.ListenerBase
             // Call was not added previously in startOutgoingCall due to it being a potential MMI
             // code, so add it now.
             addCall(call);
+        }
+
+        if (call.getIntentExtras() != null) {
+            CallEndpoint callEndpoint = call.getIntentExtras().getParcelable(
+                    TelecomManager.EXTRA_START_CALL_ON_ENDPOINT);
+            if (callEndpoint != null) {
+                mCallEndpointController.requestPlaceCall(call, callEndpoint);
+            }
         }
 
         // The call's ConnectionService has been updated.
@@ -1209,6 +1225,15 @@ public class CallsManager extends Call.ListenerBase
         }
     }
 
+    public void updateAvailableCallEndpoints(Set<CallEndpoint> availableCallEndpoints) {
+        if (availableCallEndpoints == null) {
+            return;
+        }
+        mCalls.forEach(call -> {
+            call.updateAvailableCallEndpoints(availableCallEndpoints);
+        });
+    }
+
     @Override
     public UserHandle getCurrentUserHandle() {
         return mCurrentUserHandle;
@@ -1218,7 +1243,8 @@ public class CallsManager extends Call.ListenerBase
         return mCallAudioManager;
     }
 
-    InCallController getInCallController() {
+    @VisibleForTesting
+    public InCallController getInCallController() {
         return mInCallController;
     }
 
