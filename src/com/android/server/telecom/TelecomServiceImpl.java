@@ -1883,6 +1883,31 @@ public class TelecomServiceImpl {
         }
 
         /**
+         * A method intended for test to clean up orphan {@link PhoneAccount}. An orphan
+         * {@link PhoneAccount} is a phone account belongs to an invalid {@link UserHandle} or a
+         * deleted package.
+         *
+         * @return the number of orphan {@code PhoneAccount} deleted.
+         */
+        @Override
+        public int cleanupOrphanPhoneAccounts() {
+            Log.startSession("TCI.cOPA");
+            try {
+                synchronized (mLock) {
+                    enforceShellOnly(Binder.getCallingUid(), "cleanupOrphanPhoneAccounts");
+                    long token = Binder.clearCallingIdentity();
+                    try {
+                        return mPhoneAccountRegistrar.cleanupOrphanedPhoneAccounts();
+                    } finally {
+                        Binder.restoreCallingIdentity(token);
+                    }
+                }
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        /**
          * A method intended for use in testing to reset car mode at all priorities.
          *
          * Runs during setup to avoid cascading failures from failing car mode CTS.
@@ -2242,7 +2267,7 @@ public class TelecomServiceImpl {
         if (result != PackageManager.PERMISSION_GRANTED) {
             // Other callers are only allowed to modify PhoneAccounts if the relevant system
             // feature is enabled ...
-            enforceConnectionServiceFeature();
+            enforceTelecomFeature();
             // ... and the PhoneAccounts they refer to are for their own package.
             enforceCallingPackage(packageName, "enforcePhoneAccountModificationForPackage");
         }
@@ -2278,8 +2303,13 @@ public class TelecomServiceImpl {
         }
     }
 
-    private void enforceConnectionServiceFeature() {
-        enforceFeature(PackageManager.FEATURE_CONNECTION_SERVICE);
+    private void enforceTelecomFeature() {
+        PackageManager pm = mContext.getPackageManager();
+        if (!pm.hasSystemFeature(PackageManager.FEATURE_TELECOM)
+                && !pm.hasSystemFeature(PackageManager.FEATURE_CONNECTION_SERVICE)) {
+            throw new UnsupportedOperationException(
+                    "System does not support feature " + PackageManager.FEATURE_TELECOM);
+        }
     }
 
     private void enforceRegisterSimSubscriptionPermission() {
@@ -2333,14 +2363,6 @@ public class TelecomServiceImpl {
             mContext.enforceCallingOrSelfPermission(
                     android.Manifest.permission.INTERACT_ACROSS_USERS_FULL, "Must be system or have"
                             + " INTERACT_ACROSS_USERS_FULL permission");
-        }
-    }
-
-    private void enforceFeature(String feature) {
-        PackageManager pm = mContext.getPackageManager();
-        if (!pm.hasSystemFeature(feature)) {
-            throw new UnsupportedOperationException(
-                    "System does not support feature " + feature);
         }
     }
 
