@@ -488,7 +488,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     /** Whether an attempt has been made to load the text message responses. */
     private boolean mCannedSmsResponsesLoadingStarted = false;
 
-    private IVideoProvider mVideoProvider;
     private VideoProviderProxy mVideoProviderProxy;
 
     private boolean mIsVoipAudioMode;
@@ -3632,8 +3631,6 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // Ignore RemoteException.
             }
         }
-
-        mVideoProvider = videoProvider;
 
         for (Listener l : mListeners) {
             l.onVideoCallProviderChanged(Call.this);
