@@ -3439,7 +3439,7 @@ public class CallsManager extends Call.ListenerBase
      *
      * @return {@code True} if there are any non-external calls, {@code false} otherwise.
      */
-    boolean hasAnyCalls() {
+    public boolean hasAnyCalls() {
         if (mCalls.isEmpty()) {
             return false;
         }
