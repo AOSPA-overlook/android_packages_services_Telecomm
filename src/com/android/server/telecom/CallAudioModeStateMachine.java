@@ -44,13 +44,12 @@ public class CallAudioModeStateMachine extends StateMachine {
         public boolean hasAudioProcessingCalls;
         public boolean isTonePlaying;
         public boolean foregroundCallIsVoip;
-        public boolean hasTetheredCalls;
         public Session session;
         public boolean isCrsCall;
 
         private MessageArgs(boolean hasActiveOrDialingCalls, boolean hasRingingCalls,
                 boolean hasHoldingCalls, boolean hasAudioProcessingCalls, boolean isTonePlaying,
-                boolean foregroundCallIsVoip, boolean hasTetheredCalls, Session session,
+                boolean foregroundCallIsVoip, Session session,
                 boolean isCrsCall) {
             this.hasActiveOrDialingCalls = hasActiveOrDialingCalls;
             this.hasRingingCalls = hasRingingCalls;
@@ -58,7 +57,6 @@ public class CallAudioModeStateMachine extends StateMachine {
             this.hasAudioProcessingCalls = hasAudioProcessingCalls;
             this.isTonePlaying = isTonePlaying;
             this.foregroundCallIsVoip = foregroundCallIsVoip;
-            this.hasTetheredCalls = hasTetheredCalls;
             this.session = session;
             this.isCrsCall = isCrsCall;
         }
@@ -70,7 +68,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                     ", hasRingingCalls=" + hasRingingCalls +
                     ", hasHoldingCalls=" + hasHoldingCalls +
                     ", hasAudioProcessingCalls=" + hasAudioProcessingCalls +
-                    ", hasTetheredCalls=" + hasTetheredCalls +
                     ", isTonePlaying=" + isTonePlaying +
                     ", foregroundCallIsVoip=" + foregroundCallIsVoip +
                     ", session=" + session +
@@ -85,7 +82,6 @@ public class CallAudioModeStateMachine extends StateMachine {
             private boolean mHasAudioProcessingCalls;
             private boolean mIsTonePlaying;
             private boolean mForegroundCallIsVoip;
-            private boolean mHasTetheredCalls;
             private Session mSession;
             private boolean mIsCrsCall;
 
@@ -119,11 +115,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                 return this;
             }
 
-            public Builder setHasTetheredCalls(boolean hasTetheredCalls) {
-                mHasTetheredCalls = hasTetheredCalls;
-                return this;
-            }
-
             public Builder setSession(Session session) {
                 mSession = session;
                 return this;
@@ -137,7 +128,7 @@ public class CallAudioModeStateMachine extends StateMachine {
             public MessageArgs build() {
                 return new MessageArgs(mHasActiveOrDialingCalls, mHasRingingCalls, mHasHoldingCalls,
                         mHasAudioProcessingCalls, mIsTonePlaying, mForegroundCallIsVoip,
-                        mHasTetheredCalls, mSession, mIsCrsCall);
+                        mSession, mIsCrsCall);
             }
         }
     }
@@ -152,20 +143,17 @@ public class CallAudioModeStateMachine extends StateMachine {
     public static final int ENTER_RING_FOCUS_FOR_TESTING = 4;
     public static final int ENTER_TONE_OR_HOLD_FOCUS_FOR_TESTING = 5;
     public static final int ENTER_AUDIO_PROCESSING_FOCUS_FOR_TESTING = 6;
-    public static final int ENTER_TETHERED_EXTERNAL_FOR_TESTING = 7;
-    public static final int ABANDON_FOCUS_FOR_TESTING = 8;
+    public static final int ABANDON_FOCUS_FOR_TESTING = 7;
 
     public static final int NO_MORE_ACTIVE_OR_DIALING_CALLS = 1001;
     public static final int NO_MORE_RINGING_CALLS = 1002;
     public static final int NO_MORE_HOLDING_CALLS = 1003;
     public static final int NO_MORE_AUDIO_PROCESSING_CALLS = 1004;
-    public static final int NO_MORE_TETHERED_CALLS = 1005;
 
     public static final int NEW_ACTIVE_OR_DIALING_CALL = 2001;
     public static final int NEW_RINGING_CALL = 2002;
     public static final int NEW_HOLDING_CALL = 2003;
     public static final int NEW_AUDIO_PROCESSING_CALL = 2004;
-    public static final int NEW_TETHERED_EXTERNAL_CALL = 2005;
 
     public static final int TONE_STARTED_PLAYING = 3001;
     public static final int TONE_STOPPED_PLAYING = 3002;
@@ -188,18 +176,15 @@ public class CallAudioModeStateMachine extends StateMachine {
         put(ENTER_RING_FOCUS_FOR_TESTING, "ENTER_RING_FOCUS_FOR_TESTING");
         put(ENTER_AUDIO_PROCESSING_FOCUS_FOR_TESTING, "ENTER_AUDIO_PROCESSING_FOCUS_FOR_TESTING");
         put(ENTER_TONE_OR_HOLD_FOCUS_FOR_TESTING, "ENTER_TONE_OR_HOLD_FOCUS_FOR_TESTING");
-        put(ENTER_TETHERED_EXTERNAL_FOR_TESTING, "ENTER_TETHERED_EXTERNAL_FOR_TESTING");
         put(ABANDON_FOCUS_FOR_TESTING, "ABANDON_FOCUS_FOR_TESTING");
         put(NO_MORE_ACTIVE_OR_DIALING_CALLS, "NO_MORE_ACTIVE_OR_DIALING_CALLS");
         put(NO_MORE_RINGING_CALLS, "NO_MORE_RINGING_CALLS");
         put(NO_MORE_HOLDING_CALLS, "NO_MORE_HOLDING_CALLS");
         put(NO_MORE_AUDIO_PROCESSING_CALLS, "NO_MORE_AUDIO_PROCESSING_CALLS");
-        put(NO_MORE_TETHERED_CALLS, "NO_MORE_TETHERED_CALLS");
         put(NEW_ACTIVE_OR_DIALING_CALL, "NEW_ACTIVE_OR_DIALING_CALL");
         put(NEW_RINGING_CALL, "NEW_RINGING_CALL");
         put(NEW_HOLDING_CALL, "NEW_HOLDING_CALL");
         put(NEW_AUDIO_PROCESSING_CALL, "NEW_AUDIO_PROCESSING_CALL");
-        put(NEW_TETHERED_EXTERNAL_CALL, "NEW_TETHERED_EXTERNAL_CALL");
         put(TONE_STARTED_PLAYING, "TONE_STARTED_PLAYING");
         put(TONE_STOPPED_PLAYING, "TONE_STOPPED_PLAYING");
         put(FOREGROUND_VOIP_MODE_CHANGE, "FOREGROUND_VOIP_MODE_CHANGE");
@@ -218,7 +203,6 @@ public class CallAudioModeStateMachine extends StateMachine {
     public static final String CALL_STATE_NAME = SimCallFocusState.class.getSimpleName();
     public static final String RING_STATE_NAME = RingingFocusState.class.getSimpleName();
     public static final String COMMS_STATE_NAME = VoipCallFocusState.class.getSimpleName();
-    public static final String TETHERED_STATE_NAME = TetheredCallState.class.getSimpleName();
 
     private class BaseState extends State {
         @Override
@@ -240,9 +224,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                     return HANDLED;
                 case ENTER_AUDIO_PROCESSING_FOCUS_FOR_TESTING:
                     transitionTo(mAudioProcessingFocusState);
-                    return HANDLED;
-                case ENTER_TETHERED_EXTERNAL_FOR_TESTING:
-                    transitionTo(mTetheredCallState);
                     return HANDLED;
                 case ABANDON_FOCUS_FOR_TESTING:
                     transitionTo(mUnfocusedState);
@@ -267,6 +248,8 @@ public class CallAudioModeStateMachine extends StateMachine {
                 mCallAudioManager.setCallAudioRouteFocusState(CallAudioRouteStateMachine.NO_FOCUS);
                 mAudioManager.setMode(AudioManager.MODE_NORMAL);
                 mMostRecentMode = AudioManager.MODE_NORMAL;
+                // Don't release focus here -- wait until we get a signal that any other audio
+                // operations triggered by this are done before releasing focus.
             }
         }
 
@@ -289,9 +272,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                 case NO_MORE_AUDIO_PROCESSING_CALLS:
                     // Do nothing.
                     return HANDLED;
-                case NO_MORE_TETHERED_CALLS:
-                    // Do nothing.
-                    return HANDLED;
                 case NEW_ACTIVE_OR_DIALING_CALL:
                     transitionTo(args.foregroundCallIsVoip
                             ? mVoipCallFocusState : mSimCallFocusState);
@@ -308,9 +288,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                     Log.w(LOG_TAG, "Call was surprisingly put into hold from an unknown state." +
                             " Args are: \n" + args.toString());
                     transitionTo(mOtherFocusState);
-                    return HANDLED;
-                case NEW_TETHERED_EXTERNAL_CALL:
-                    transitionTo(mTetheredCallState);
                     return HANDLED;
                 case TONE_STARTED_PLAYING:
                     // This shouldn't happen either, but perform the action anyway.
@@ -361,9 +338,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                     }
                     transitionTo(destState);
                     return HANDLED;
-                case NO_MORE_TETHERED_CALLS:
-                    // Do nothing.
-                    return HANDLED;
                 case NEW_ACTIVE_OR_DIALING_CALL:
                     transitionTo(args.foregroundCallIsVoip
                             ? mVoipCallFocusState : mSimCallFocusState);
@@ -379,9 +353,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                     return HANDLED;
                 case NEW_AUDIO_PROCESSING_CALL:
                     // Can happen as a duplicate message
-                    return HANDLED;
-                case NEW_TETHERED_EXTERNAL_CALL:
-                    transitionTo(mTetheredCallState);
                     return HANDLED;
                 case TONE_STARTED_PLAYING:
                     // This shouldn't happen either, but perform the action anyway.
@@ -843,81 +814,6 @@ public class CallAudioModeStateMachine extends StateMachine {
         }
     }
 
-    private class TetheredCallState extends BaseState {
-        @Override
-        public void enter() {
-            Log.i(LOG_TAG, "Audio focus entering tethered external state");
-            // TODO: change MODE_CALL_SCREENING to MODE_EXTERNAL when available
-            mAudioManager.setMode(AudioManager.MODE_CALL_SCREENING);
-            mMostRecentMode = AudioManager.MODE_NORMAL;
-            mCallAudioManager.setCallAudioRouteFocusState(CallAudioRouteStateMachine.NO_FOCUS);
-            mCallAudioManager.getCallAudioRouteStateMachine().sendMessageWithSessionInfo(
-                    CallAudioRouteStateMachine.EXTERNAL_FORCE_ENABLED);
-        }
-
-        private void preExit() {
-            mCallAudioManager.getCallAudioRouteStateMachine().sendMessageWithSessionInfo(
-                    CallAudioRouteStateMachine.EXTERNAL_FORCE_DISABLED);
-        }
-
-        @Override
-        public boolean processMessage(Message msg) {
-            if (super.processMessage(msg) == HANDLED) {
-                return HANDLED;
-            }
-            MessageArgs args = (MessageArgs) msg.obj;
-            switch (msg.what) {
-                case NO_MORE_ACTIVE_OR_DIALING_CALLS:
-                    // Do nothing.
-                    return HANDLED;
-                case NO_MORE_RINGING_CALLS:
-                    // Do nothing.
-                    return HANDLED;
-                case NO_MORE_HOLDING_CALLS:
-                    // Do nothing.
-                    return HANDLED;
-                case NO_MORE_AUDIO_PROCESSING_CALLS:
-                    // Do nothing.
-                    return HANDLED;
-                case NEW_ACTIVE_OR_DIALING_CALL:
-                    BaseState destState = calculateProperStateFromArgs(args);
-                    if (destState != this) {
-                        preExit();
-                        transitionTo(destState);
-                    }
-                    return HANDLED;
-                case NEW_RINGING_CALL:
-                    preExit();
-                    transitionTo(mRingingFocusState);
-                    return HANDLED;
-                case NEW_HOLDING_CALL:
-                    // This really shouldn't happen, but recalculate from args and do the transition
-                    Log.w(LOG_TAG, "Call was surprisingly put into hold from an unknown state." +
-                            " Args are: \n" + args.toString());
-                    preExit();
-                    transitionTo(mOtherFocusState);
-                    return HANDLED;
-                case NEW_AUDIO_PROCESSING_CALL:
-                    // Do nothing.
-                    return HANDLED;
-                case NEW_TETHERED_EXTERNAL_CALL:
-                    // Can happen as a duplicate message
-                    return HANDLED;
-                case TONE_STARTED_PLAYING:
-                    // This shouldn't happen either, but perform the action anyway.
-                    Log.w(LOG_TAG, "Tone started playing unexpectedly. Args are: \n"
-                            + args.toString());
-                    return HANDLED;
-                case NO_MORE_TETHERED_CALLS:
-                    transitionTo(calculateProperStateFromArgs(args));
-                    return HANDLED;
-                default:
-                    // The forced focus switch commands are handled by BaseState.
-                    return NOT_HANDLED;
-            }
-        }
-    }
-
     private static final String LOG_TAG = CallAudioModeStateMachine.class.getSimpleName();
 
     private final BaseState mUnfocusedState = new UnfocusedState();
@@ -927,7 +823,6 @@ public class CallAudioModeStateMachine extends StateMachine {
     private final BaseState mVoipCallFocusState = new VoipCallFocusState();
     private final BaseState mAudioProcessingFocusState = new AudioProcessingFocusState();
     private final BaseState mOtherFocusState = new OtherFocusState();
-    private final BaseState mTetheredCallState = new TetheredCallState();
 
     private final AudioManager mAudioManager;
     private final SystemStateHelper mSystemStateHelper;
@@ -967,7 +862,6 @@ public class CallAudioModeStateMachine extends StateMachine {
         addState(mVoipCallFocusState);
         addState(mAudioProcessingFocusState);
         addState(mOtherFocusState);
-        addState(mTetheredCallState);
         setInitialState(mUnfocusedState);
         start();
         sendMessage(INITIALIZE, new MessageArgs.Builder()
@@ -976,7 +870,6 @@ public class CallAudioModeStateMachine extends StateMachine {
                 .setHasHoldingCalls(false)
                 .setIsTonePlaying(false)
                 .setForegroundCallIsVoip(false)
-                .setHasTetheredCalls(false)
                 .setSession(Log.createSubsession())
                 .build());
     }
@@ -1023,15 +916,12 @@ public class CallAudioModeStateMachine extends StateMachine {
         // switch to the appropriate focus.
         // Otherwise abandon focus.
 
-        // The order matters here. If there are tethered external calls, holding external route for
-        // then takes priority. After that, holding focus for active calls takes priority.
+        // The order matters here. If there are active calls, holding focus for them takes priority.
         // After that, we want to prioritize holding calls over ringing calls so that when a
         // call-waiting call gets answered, there's no transition in and out of the ringing focus
         // state. After that, we want tones since we actually hold focus during them, then the
         // audio processing state because that will release focus.
-        if (args.hasTetheredCalls) {
-            return mTetheredCallState;
-        } else if (args.hasActiveOrDialingCalls) {
+        if (args.hasActiveOrDialingCalls) {
             if (args.foregroundCallIsVoip) {
                 return mVoipCallFocusState;
             } else {
