@@ -24,6 +24,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.media.AudioAttributes;
+import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
 import android.media.Ringtone;
 import android.media.VolumeShaper;
@@ -42,6 +43,7 @@ import com.android.server.telecom.LogUtils.EventTimer;
 
 import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -172,24 +174,8 @@ public class Ringer {
     private volatile boolean mIsVibrating = false;
 
     private Handler mHandler = null;
-    private int mSavedInCallVolume = 0;
-
-    private final BroadcastReceiver mVolumeReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (intent == null ||
-                    !intent.getAction().equals(AudioManager.VOLUME_CHANGED_ACTION)) {
-                return;
-            }
-            if (intent.getIntExtra(AudioManager.EXTRA_VOLUME_STREAM_TYPE, -1)
-                    != AudioManager.STREAM_VOICE_CALL) {
-                return;
-            }
-            int index = intent.getIntExtra(AudioManager.EXTRA_VOLUME_STREAM_VALUE, 0);
-            Log.d(this, "VolumeReceiver and new index is " + index);
-            mSavedInCallVolume = index;
-        }
-    };
+    private int mSavedSpeakerInCallVolume = -1;
+    private CommunicationDeviceChangedListener mCommunicationDeviceChangedListener = null;
 
     /** Initializes the Ringer. */
     @VisibleForTesting
@@ -253,10 +239,8 @@ public class Ringer {
             return false;
         }
 
-        AudioManager audioManager =
-                mContext.getSystemService(AudioManager.class);
         LogUtils.EventTimer timer = new EventTimer();
-        boolean isVolumeOverZero = audioManager.getStreamVolume(AudioManager.STREAM_RING) > 0;
+        boolean isVolumeOverZero = mAudioManager.getStreamVolume(AudioManager.STREAM_RING) > 0;
         timer.record("isVolumeOverZero");
         boolean shouldRingForContact = shouldRingForContact(foregroundCall.getContactUri());
         timer.record("shouldRingForContact");
@@ -337,17 +321,20 @@ public class Ringer {
 
         Log.i(this, "isHfpDeviceAttached=%s, isVibratorEnabled=%s, isRingerAudible=%s, ",
                 isHfpDeviceAttached, isVibratorEnabled, isRingerAudible);
-        int ringVolumeLevel = audioManager.getStreamVolume(AudioManager.STREAM_RING);
-        if (ringVolumeLevel != 0 && isRingerAudible) {
-            Log.i(this, "Start play CRS with volume :: " + ringVolumeLevel);
-            // Set the CRS volume with local ring volume  and save the old volume setting.
-            mSavedInCallVolume = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL);
-            final IntentFilter filter = new IntentFilter();
-            filter.addAction(AudioManager.VOLUME_CHANGED_ACTION);
-            mContext.registerReceiver(mVolumeReceiver, filter);
-            audioManager.setStreamVolume(
-                    AudioManager.STREAM_VOICE_CALL,
-                    convertVolumeLevelFromRingToCrs(ringVolumeLevel), 0);
+        if (isRingerAudible) {
+            if (!mAudioManager.isSpeakerphoneOn()) {
+                mCommunicationDeviceChangedListener = new CommunicationDeviceChangedListener();
+                try {
+                    mAudioManager.addOnCommunicationDeviceChangedListener(
+                            mContext.getMainExecutor(), mCommunicationDeviceChangedListener);
+                } catch (Exception e) {
+                    Log.i(this, "addOnCommunicationDeviceChangedListener failed with exception: "
+                            + e);
+                }
+            } else {
+                Log.i(this,"Speaker is ON for CRS.");
+                setSystemSystemSpeakerInCallVolume();
+            }
         }
         if (mBlockOnRingingFuture != null) {
             mBlockOnRingingFuture.complete(null);
@@ -358,26 +345,79 @@ public class Ringer {
         return shouldAcquireAudioFocus;
     }
 
-    private static int convertVolumeLevelFromRingToCrs(int ringVolume) {
-        //CRS volume is same as call volume, MinVolume is 1 and MaxVolume 5.
-        //The range of local ring volume is from 0 to 7, telephony needs to align
-        //volume level between local ring and CRS.
-        //local ring level <---> CRS volume level
-        // 7/6             <--->      5
-        // 5/4             <--->      4
-        // 3               <--->      3
-        // 2               <--->      2
-        // 1               <--->      1
-        // 0               <--->  silence CRS
-        final int upperBound  = 5;
-        final int middleBound = 4;
-        if (ringVolume < middleBound) { // Linear mapping for lower bound.
-            return ringVolume;
-        } else if (ringVolume > upperBound  ) {  // Saturating mapping upper bound.
-            return upperBound;
-        } else {
-            return middleBound;
+    class CommunicationDeviceChangedListener implements
+        AudioManager.OnCommunicationDeviceChangedListener {
+            @Override
+            public void onCommunicationDeviceChanged(AudioDeviceInfo device) {
+                if (device == null) {
+                    return;
+                }
+                Log.i(this,"onCommunicationDeviceChanged, Device type : "
+                        + device.getInternalType());
+                if (device.getInternalType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    setSystemSystemSpeakerInCallVolume();
+                }
+            }
+     }
+
+    private void setSystemSystemSpeakerInCallVolume() {
+        int ringVolumeLevel = mAudioManager.getStreamVolume(AudioManager.STREAM_RING);
+        if (ringVolumeLevel > 0) {
+            Log.i(this, "Start play CRS with volume :: " + ringVolumeLevel);
+            // Set the CRS volume with local ring volume  and save the old volume setting.
+            mSavedSpeakerInCallVolume = mAudioManager.getStreamVolume(
+                    AudioManager.STREAM_VOICE_CALL);
+            Log.i(this, "mSavedSpeakerInCallVolume is :: " + mSavedSpeakerInCallVolume);
+            mAudioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL,
+                    convertVolumeLevelFromRingToCrs(ringVolumeLevel), 0);
         }
+    }
+
+    public void restoreSystemSpeakerInCallVolume() {
+        boolean speakerOn = mAudioManager.isSpeakerphoneOn();
+        Log.i(this, "restoreSystemSpeakerInCallVolume :: speaker ON =  " + speakerOn
+                + ", mSavedSpeakerInCallVolume = " + mSavedSpeakerInCallVolume);
+        muteCrs(false);
+        if (speakerOn && (mSavedSpeakerInCallVolume != -1)) {
+            // Restore inCall volume after getting ACTIVE/DISCONNECTED state as
+            // CRS volume used the system ringing volume level.
+            // And set volume level for speaker only.
+            mAudioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL,
+                    mSavedSpeakerInCallVolume, 0);
+            mSavedSpeakerInCallVolume = -1;
+            Log.i(this, "restoreSystemSpeakerInCallVolume done");
+        }
+    }
+
+    private int convertVolumeLevelFromRingToCrs(int ringVolume) {
+        // CRS volume is same as voice call volume per design and telephony should
+        // adjust voice volume according to ring volume when playing CRS audio,
+        // however the range of local ring volume and voice call volume are different
+        // for different devices, telephony needs to align volume level between local
+        // ring and CRS(voice call volume) according to device audio configuration.
+        final int maxVoiceCallVolume = mAudioManager.getStreamMaxVolume(
+                AudioManager.STREAM_VOICE_CALL);
+        final int maxRingVolume = mAudioManager.getStreamMaxVolume(AudioManager.STREAM_RING);
+        final int minVoiceCallVolume = mAudioManager.getStreamMinVolume(
+                AudioManager.STREAM_VOICE_CALL);
+        final int minRingVolume = mAudioManager.getStreamMinVolume(AudioManager.STREAM_RING);
+        if (ringVolume >= maxRingVolume) {
+            return maxVoiceCallVolume;
+        }
+        final float ratio =(float) (maxVoiceCallVolume - minVoiceCallVolume) /
+            (maxRingVolume - minRingVolume);
+        int crsVolume = minVoiceCallVolume + (int)Math.round(ratio * (ringVolume - minRingVolume));
+        if (crsVolume >= maxVoiceCallVolume) {
+            crsVolume = maxVoiceCallVolume;
+        }
+        Log.i(this, "maxVoiceCallVol=%d, maxRingVol=%d, minVoiceCallVol=%d, "
+                + "minRingVol=%d, crsVolume=%d, ",
+                maxVoiceCallVolume,
+                maxRingVolume,
+                minVoiceCallVolume,
+                minRingVolume,
+                crsVolume);
+        return crsVolume;
     }
 
     public boolean startRinging(Call foregroundCall, boolean isHfpDeviceAttached) {
@@ -590,14 +630,28 @@ public class Ringer {
         }
     }
 
+    public void muteCrs(boolean mute) {
+        Log.i(this, "Mute CRS : " + mute);
+        mAudioManager.adjustStreamVolume(AudioManager.STREAM_VOICE_CALL,
+                mute ? AudioManager.ADJUST_MUTE : AudioManager.ADJUST_UNMUTE, 0);
+    }
+
     public void stopPlayingCrs() {
         if (mRingingCall != null) {
             Log.addEvent(mRingingCall, LogUtils.Events.STOP_RINGER);
-            AudioManager audioManager =  mContext.getSystemService(AudioManager.class);
-            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, mSavedInCallVolume, 0);
-            mContext.unregisterReceiver(mVolumeReceiver);
-            mSavedInCallVolume = 0;
             mRingingCall = null;
+        }
+
+        if (mCommunicationDeviceChangedListener != null) {
+            try {
+                mAudioManager.removeOnCommunicationDeviceChangedListener(
+                        mCommunicationDeviceChangedListener);
+            } catch (Exception e) {
+                Log.i(this, "removeOnCommunicationDeviceChangedListener failed with exception: "
+                         + e);
+            }
+            mCommunicationDeviceChangedListener = null;
+
         }
         // If we haven't started vibrating because we were waiting for the haptics info, cancel
         // it and don't vibrate at all.

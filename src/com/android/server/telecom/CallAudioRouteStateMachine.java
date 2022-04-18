@@ -1166,6 +1166,15 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     mWasOnSpeaker = false;
                     // fall through
                 case SWITCH_BLUETOOTH:
+                    // Keeps CRS audio playing out from speaker,including,
+                    // 1. Plugin BT/Wired handset after CRS call comes.
+                    // 2. Plugin BT/Wired handset before CRS call -> remove during playing
+                    // CRS and plugin BT/Wired handset back.
+                    if (isCrsCall()) {
+                        Log.i(this, "Ignoring switch to bluetooth command." +
+                                "Not allowed during CRS call.");
+                        return HANDLED;
+                    }
                     String address = (msg.obj instanceof SomeArgs) ?
                             (String) ((SomeArgs) msg.obj).arg2 : null;
                     if ((mAvailableRoutes & ROUTE_BLUETOOTH) != 0) {
@@ -1184,6 +1193,11 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     mWasOnSpeaker = false;
                     // fall through
                 case SWITCH_HEADSET:
+                    if (isCrsCall()) {
+                        Log.i(this, "Ignoring switch to headset command." +
+                                " Not allowed during CRS call.");
+                        return HANDLED;
+                    }
                     if ((mAvailableRoutes & ROUTE_WIRED_HEADSET) != 0) {
                         transitionTo(mActiveHeadsetRoute);
                     } else {
@@ -1210,6 +1224,11 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     return NOT_HANDLED;
             }
         }
+    }
+
+    private boolean isCrsCall() {
+        Call ringingCall = mCallsManager.getRingingOrSimulatedRingingCall();
+        return ringingCall != null && ringingCall.isCrsCall();
     }
 
     class QuiescentSpeakerRoute extends SpeakerRoute {
