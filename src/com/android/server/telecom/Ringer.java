@@ -32,6 +32,7 @@ import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.VibrationAttributes;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
@@ -127,12 +128,9 @@ public class Ringer {
 
     private static final float EPSILON = 1e-6f;
 
-    private static final AudioAttributes VIBRATION_ATTRIBUTES = new AudioAttributes.Builder()
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-            .build();
+    private static final VibrationAttributes VIBRATION_ATTRIBUTES =
+            new VibrationAttributes.Builder().setUsage(VibrationAttributes.USAGE_RINGTONE).build();
 
-    private static VibrationEffect mRampingRingerVibrationEffect;
     private static VolumeShaper.Configuration mVolumeShaperConfig;
 
     /**
@@ -177,6 +175,12 @@ public class Ringer {
     private int mSavedSpeakerInCallVolume = -1;
     private CommunicationDeviceChangedListener mCommunicationDeviceChangedListener = null;
 
+    /**
+     * Use lock different from the Telecom sync because ringing process is asynchronous outside that
+     * lock
+     */
+    private final Object mLock;
+
     /** Initializes the Ringer. */
     @VisibleForTesting
     public Ringer(
@@ -189,6 +193,7 @@ public class Ringer {
             VibrationEffectProxy vibrationEffectProxy,
             InCallController inCallController) {
 
+        mLock = new Object();
         mSystemSettingsUtil = systemSettingsUtil;
         mPlayerFactory = playerFactory;
         mContext = context;
@@ -558,20 +563,30 @@ public class Ringer {
 
     private void maybeStartVibration(Call foregroundCall, boolean shouldRingForContact,
         VibrationEffect effect, boolean isVibrationEnabled, boolean isRingerAudible) {
-        if (isVibrationEnabled
-                && !mIsVibrating && shouldRingForContact) {
-            if (mSystemSettingsUtil.applyRampingRinger(mContext)
-                    && isRingerAudible) {
-                Log.i(this, "start vibration for ramping ringer.");
+        synchronized (mLock) {
+            if (isVibrationEnabled
+                    && !mIsVibrating && shouldRingForContact) {
+                Log.addEvent(foregroundCall, LogUtils.Events.START_VIBRATOR,
+                        "hasVibrator=%b, userRequestsVibrate=%b, ringerMode=%d, isVibrating=%b",
+                        mVibrator.hasVibrator(),
+                        mSystemSettingsUtil.canVibrateWhenRinging(mContext),
+                        mAudioManager.getRingerModeInternal(), mIsVibrating);
+                if (mSystemSettingsUtil.applyRampingRinger(mContext)
+                        && isRingerAudible) {
+                    Log.i(this, "start vibration for ramping ringer.");
+                } else {
+                    Log.i(this, "start normal vibration.");
+                }
                 mIsVibrating = true;
                 mVibrator.vibrate(effect, VIBRATION_ATTRIBUTES);
             } else {
-                Log.i(this, "start normal vibration.");
-                mIsVibrating = true;
-                mVibrator.vibrate(effect, VIBRATION_ATTRIBUTES);
+                Log.addEvent(foregroundCall, LogUtils.Events.SKIP_VIBRATION,
+                        "hasVibrator=%b, userRequestsVibrate=%b, ringerMode=%d, isVibrating=%b",
+                        mVibrator.hasVibrator(),
+                        mSystemSettingsUtil.canVibrateWhenRinging(mContext),
+                        mAudioManager.getRingerModeInternal(), mIsVibrating);
+                Log.addEvent(foregroundCall, LogUtils.Events.SKIP_VIBRATION, "already vibrating");
             }
-        } else if (mIsVibrating) {
-            Log.addEvent(foregroundCall, LogUtils.Events.SKIP_VIBRATION, "already vibrating");
         }
     }
 
@@ -668,24 +683,26 @@ public class Ringer {
     }
 
     public void stopRinging() {
-        if (mRingingCall != null) {
-            Log.addEvent(mRingingCall, LogUtils.Events.STOP_RINGER);
-            mRingingCall = null;
-        }
+        synchronized (mLock) {
+            if (mRingingCall != null) {
+                Log.addEvent(mRingingCall, LogUtils.Events.STOP_RINGER);
+                mRingingCall = null;
+            }
 
-        mRingtonePlayer.stop();
+            mRingtonePlayer.stop();
 
-        // If we haven't started vibrating because we were waiting for the haptics info, cancel
-        // it and don't vibrate at all.
-        if (mVibrateFuture != null) {
-            mVibrateFuture.cancel(true);
-        }
+            // If we haven't started vibrating because we were waiting for the haptics info, cancel
+            // it and don't vibrate at all.
+            if (mVibrateFuture != null) {
+                mVibrateFuture.cancel(true);
+            }
 
-        if (mIsVibrating) {
-            Log.addEvent(mVibratingCall, LogUtils.Events.STOP_VIBRATOR);
-            mVibrator.cancel();
-            mIsVibrating = false;
-            mVibratingCall = null;
+            if (mIsVibrating) {
+                Log.addEvent(mVibratingCall, LogUtils.Events.STOP_VIBRATOR);
+                mVibrator.cancel();
+                mIsVibrating = false;
+                mVibratingCall = null;
+            }
         }
     }
 
@@ -735,20 +752,6 @@ public class Ringer {
             shouldVibrate = ringerMode != AudioManager.RINGER_MODE_SILENT;
         } else {
             shouldVibrate = ringerMode == AudioManager.RINGER_MODE_VIBRATE;
-        }
-
-        // Technically this should be in the calling method, but it seemed a little odd to pass
-        // around a whole bunch of state just for logging purposes.
-        if (shouldVibrate) {
-            Log.addEvent(call, LogUtils.Events.START_VIBRATOR,
-                    "hasVibrator=%b, userRequestsVibrate=%b, ringerMode=%d, isVibrating=%b",
-                    mVibrator.hasVibrator(), mSystemSettingsUtil.canVibrateWhenRinging(context),
-                    ringerMode, mIsVibrating);
-        } else {
-            Log.addEvent(call, LogUtils.Events.SKIP_VIBRATION,
-                    "hasVibrator=%b, userRequestsVibrate=%b, ringerMode=%d, isVibrating=%b",
-                    mVibrator.hasVibrator(), mSystemSettingsUtil.canVibrateWhenRinging(context),
-                    ringerMode, mIsVibrating);
         }
 
         return shouldVibrate;
