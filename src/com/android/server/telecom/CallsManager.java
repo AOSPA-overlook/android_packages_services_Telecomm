@@ -2628,6 +2628,14 @@ public class CallsManager extends Call.ListenerBase
             || mBluetoothRouteManager.isBluetoothAvailable();
      }
 
+     public boolean isWiredHandsetIn() {
+        return mWiredHeadsetManager.isPluggedIn();
+     }
+
+     public boolean isBtAvailble() {
+       return  mBluetoothRouteManager.isBluetoothAvailable();
+     }
+
     /**
      * Determines if the speakerphone should be enabled for when docked.  Speakerphone
      * should be enabled if the device is docked and bluetooth or the wired headset are
@@ -4137,6 +4145,19 @@ public class CallsManager extends Call.ListenerBase
                     dialedNumber.equals("5"));
         }
         return false;
+    }
+
+    /**
+     * Determines if there are any ongoing self managed calls for the given package/user.
+     * @param packageName The package name to check.
+     * @param userHandle The userhandle to check.
+     * @return {@code true} if the app has ongoing calls, or {@code false} otherwise.
+     */
+    public boolean isInSelfManagedCall(String packageName, UserHandle userHandle) {
+        return mCalls.stream().anyMatch(
+                c -> c.isSelfManaged()
+                && c.getTargetPhoneAccount().getComponentName().getPackageName().equals(packageName)
+                && c.getTargetPhoneAccount().getUserHandle().equals(userHandle));
     }
 
     @VisibleForTesting
@@ -5779,6 +5800,18 @@ public class CallsManager extends Call.ListenerBase
     public void addConnectionServiceRepositoryCache(ComponentName componentName,
             UserHandle userHandle, ConnectionServiceWrapper service) {
         mConnectionServiceRepository.setService(componentName, userHandle, service);
+    }
+
+    /**
+     * Generates a log "marking".  This is a unique call event which contains a specified message.
+     * A log mark is triggered by the command: adb shell telecom log-mark MESSAGE
+     * A tester can use this when executing tests to make it very clear when a particular test step
+     * was reached.
+     * @param message the message to mark in the logs.
+     */
+    public void requestLogMark(String message) {
+        mCalls.forEach(c -> Log.addEvent(c, LogUtils.Events.USER_LOG_MARK, message));
+        Log.addEvent(null /* global */, LogUtils.Events.USER_LOG_MARK, message);
     }
 
     /* Determines whether the two calls have the same target phone account */
