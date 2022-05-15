@@ -519,8 +519,12 @@ public class CallAudioManager extends CallsManagerListenerBase {
     @VisibleForTesting
     public boolean startRinging() {
         synchronized (mCallsManager.getLock()) {
-            return mRinger.startRinging(mForegroundCall,
+            boolean result = mRinger.startRinging(mForegroundCall,
                     mCallAudioRouteStateMachine.isHfpDeviceAvailable());
+            if (result) {
+                mForegroundCall.setStartRingTime();
+            }
+            return result;
         }
     }
 
