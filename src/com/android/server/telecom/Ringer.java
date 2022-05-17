@@ -16,6 +16,10 @@
 
 package com.android.server.telecom;
 
+import static android.provider.CallLog.Calls.USER_MISSED_DND_MODE;
+import static android.provider.CallLog.Calls.USER_MISSED_LOW_RING_VOLUME;
+import static android.provider.CallLog.Calls.USER_MISSED_NO_VIBRATE;
+
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.Person;
@@ -44,6 +48,7 @@ import com.android.server.telecom.LogUtils.EventTimer;
 
 import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -65,6 +70,9 @@ public class Ringer {
     }
     @VisibleForTesting
     public VibrationEffect mDefaultVibrationEffect;
+
+    // Used for test to notify the completion of RingerAttributes
+    private CountDownLatch mAttributesLatch;
 
     private static final long[] PULSE_PRIMING_PATTERN = {0,12,250,12,500}; // priming  + interval
 
@@ -204,7 +212,6 @@ public class Ringer {
         mRingtoneFactory = ringtoneFactory;
         mInCallController = inCallController;
         mVibrationEffectProxy = vibrationEffectProxy;
-        mAudioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
 
         if (mContext.getResources().getBoolean(R.bool.use_simple_vibration_pattern)) {
             mDefaultVibrationEffect = mVibrationEffectProxy.createWaveform(SIMPLE_VIBRATION_PATTERN,
@@ -449,6 +456,7 @@ public class Ringer {
 
         RingerAttributes attributes = null;
         try {
+            mAttributesLatch = new CountDownLatch(1);
             attributes = ringerAttributesFuture.get(
                     RINGER_ATTRIBUTES_TIMEOUT, TimeUnit.MILLISECONDS);
         } catch (ExecutionException | InterruptedException | TimeoutException e) {
@@ -564,6 +572,7 @@ public class Ringer {
     private void maybeStartVibration(Call foregroundCall, boolean shouldRingForContact,
         VibrationEffect effect, boolean isVibrationEnabled, boolean isRingerAudible) {
         synchronized (mLock) {
+            mAudioManager = mContext.getSystemService(AudioManager.class);
             if (isVibrationEnabled
                     && !mIsVibrating && shouldRingForContact) {
                 Log.addEvent(foregroundCall, LogUtils.Events.START_VIBRATOR,
@@ -580,12 +589,12 @@ public class Ringer {
                 mIsVibrating = true;
                 mVibrator.vibrate(effect, VIBRATION_ATTRIBUTES);
             } else {
+                foregroundCall.setUserMissed(USER_MISSED_NO_VIBRATE);
                 Log.addEvent(foregroundCall, LogUtils.Events.SKIP_VIBRATION,
                         "hasVibrator=%b, userRequestsVibrate=%b, ringerMode=%d, isVibrating=%b",
                         mVibrator.hasVibrator(),
                         mSystemSettingsUtil.canVibrateWhenRinging(mContext),
                         mAudioManager.getRingerModeInternal(), mIsVibrating);
-                Log.addEvent(foregroundCall, LogUtils.Events.SKIP_VIBRATION, "already vibrating");
             }
         }
     }
@@ -787,6 +796,7 @@ public class Ringer {
     }
 
     private RingerAttributes getRingerAttributes(Call call, boolean isHfpDeviceAttached) {
+        mAudioManager = mContext.getSystemService(AudioManager.class);
         RingerAttributes.Builder builder = new RingerAttributes.Builder();
 
         LogUtils.EventTimer timer = new EventTimer();
@@ -838,6 +848,15 @@ public class Ringer {
         boolean shouldAcquireAudioFocus =
                 isRingerAudible || (isHfpDeviceAttached && shouldRingForContact) || isSelfManaged;
 
+        // Set missed reason according to attributes
+        if (!isVolumeOverZero) {
+            call.setUserMissed(USER_MISSED_LOW_RING_VOLUME);
+        }
+        if (!shouldRingForContact) {
+            call.setUserMissed(USER_MISSED_DND_MODE);
+        }
+
+        mAttributesLatch.countDown();
         return builder.setEndEarly(endEarly)
                 .setLetDialerHandleRinging(letDialerHandleRinging)
                 .setAcquireAudioFocus(shouldAcquireAudioFocus)
@@ -855,5 +874,14 @@ public class Ringer {
             mHandler = handlerThread.getThreadHandler();
         }
         return mHandler;
+    }
+
+    @VisibleForTesting
+    public boolean waitForAttributesCompletion() throws InterruptedException {
+        if (mAttributesLatch != null) {
+            return mAttributesLatch.await(RINGER_ATTRIBUTES_TIMEOUT, TimeUnit.MILLISECONDS);
+        } else {
+            return false;
+        }
     }
 }
