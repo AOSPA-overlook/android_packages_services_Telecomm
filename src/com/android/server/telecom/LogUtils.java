@@ -208,6 +208,7 @@ public class LogUtils {
         public static final String CALL_DIAGNOSTIC_SERVICE_TIMEOUT =
                 "CALL_DIAGNOSTIC_SERVICE_TIMEOUT";
         public static final String VERSTAT_CHANGED = "VERSTAT_CHANGED";
+        public static final String SET_VOIP_MODE = "SET_VOIP_MODE";
 
         public static class Timings {
             public static final String ACCEPT_TIMING = "accept";
@@ -255,12 +256,13 @@ public class LogUtils {
         EventManager.Loggable recordEntry = eventRecord.getRecordEntry();
         if (recordEntry instanceof Call) {
             Call callRecordEntry = (Call) recordEntry;
-            android.telecom.Log.i(LOGUTILS_TAG, "EventRecord added as Call: " + callRecordEntry);
             Analytics.CallInfo callInfo = callRecordEntry.getAnalytics();
             if(callInfo != null) {
                 callInfo.setCallEvents(eventRecord);
             } else {
-                android.telecom.Log.w(LOGUTILS_TAG, "Could not get Analytics CallInfo.");
+                if(!android.telecom.Log.isUnitTestingEnabled()) {
+                    android.telecom.Log.w(LOGUTILS_TAG, "Could not get Analytics CallInfo.");
+                }
             }
         } else {
             android.telecom.Log.w(LOGUTILS_TAG, "Non-Call EventRecord Added.");
