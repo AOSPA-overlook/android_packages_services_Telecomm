@@ -321,10 +321,9 @@ public class InCallController extends CallsManagerListenerBase implements
             mIsConnected = true;
             mInCallServiceInfo.setBindingStartTime(mClockProxy.elapsedRealtime());
             if (!mContext.bindServiceAsUser(intent, mServiceConnection,
-                        Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE |
-                        Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS |
-                        Context.BIND_ABOVE_CLIENT,
-                        UserHandle.CURRENT)) {
+                    Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE
+                            | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS,
+                    UserHandle.CURRENT)) {
                 Log.w(this, "Failed to connect.");
                 mIsConnected = false;
             }
