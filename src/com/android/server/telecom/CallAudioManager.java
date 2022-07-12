@@ -137,8 +137,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
             playToneAfterCallConnected(call);
         }
         //reset CRS mode once call state changed.
-        if (mIsInCrsMode && (newState == CallState.ACTIVE
-                    || newState == CallState.DISCONNECTED)) {
+        if ((call == mForegroundCall) && mIsInCrsMode &&
+                (newState == CallState.ACTIVE || newState == CallState.DISCONNECTED)) {
             Log.i(this, "CRS call is finished");
             mIsInCrsMode = false;
             mRinger.restoreSystemSpeakerInCallVolume();
