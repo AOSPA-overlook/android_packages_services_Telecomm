@@ -338,6 +338,8 @@ public class BluetoothDeviceManager {
                 /* Check if group is known. */
                 if (!mGroupsByDevice.containsKey(device)) {
                     int groupId = mBluetoothLeAudioService.getGroupId(device);
+                    Log.i(this, "onDeviceConnected: Device: " + device.getAddress()
+                           + " groupId: " + groupId);
                     /* If it is not yet assigned, then it will be provided in the callback */
                     if (groupId != BluetoothLeAudio.GROUP_ID_INVALID) {
                         mGroupsByDevice.put(device, groupId);
@@ -395,12 +397,14 @@ public class BluetoothDeviceManager {
     }
 
     public void disconnectAudio() {
+        Log.i(this, "disconnectAudio");
         disconnectSco();
         clearLeAudioCommunicationDevice();
         clearHearingAidCommunicationDevice();
     }
 
     public void disconnectSco() {
+        Log.i(this, "disconnectSco");
         if (mBluetoothHeadset == null) {
             Log.w(this, "Trying to disconnect audio but no headset service exists.");
         } else {
@@ -417,13 +421,15 @@ public class BluetoothDeviceManager {
     }
 
     public void clearLeAudioCommunicationDevice() {
+        Log.i(this, "clearLeAudioCommunicationDevice: mLeAudioSetAsCommunicationDevice = " +
+                mLeAudioSetAsCommunicationDevice);
         if (!mLeAudioSetAsCommunicationDevice) {
             return;
         }
+        mLeAudioSetAsCommunicationDevice = false;
 
         if (mAudioManager == null) {
             Log.i(this, "clearLeAudioCommunicationDevice: mAudioManager is null");
-            mLeAudioSetAsCommunicationDevice = false;
             return;
         }
         if (mAudioManager.getCommunicationDevice() != null
@@ -431,24 +437,25 @@ public class BluetoothDeviceManager {
                 == AudioDeviceInfo.TYPE_BLE_HEADSET) {
             mBluetoothRouteManager.onAudioLost(mAudioManager.getCommunicationDevice().getAddress());
             mAudioManager.clearCommunicationDevice();
-            mLeAudioSetAsCommunicationDevice = false;
         }
     }
 
     public void clearHearingAidCommunicationDevice() {
+        Log.i(this, "clearHearingAidCommunicationDevice: mHearingAidSetAsCommunicationDevice = " +
+                mHearingAidSetAsCommunicationDevice);
         if (!mHearingAidSetAsCommunicationDevice) {
             return;
         }
+        mHearingAidSetAsCommunicationDevice = false;
 
         if (mAudioManager == null) {
             Log.i(this, "clearHearingAidCommunicationDevice: mAudioManager is null");
-            mHearingAidSetAsCommunicationDevice = false;
+            return;
         }
         if (mAudioManager.getCommunicationDevice() != null
                 && mAudioManager.getCommunicationDevice().getType()
                 == AudioDeviceInfo.TYPE_HEARING_AID) {
             mAudioManager.clearCommunicationDevice();
-            mHearingAidSetAsCommunicationDevice = false;
         }
     }
 
