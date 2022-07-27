@@ -186,6 +186,7 @@ public class BluetoothDeviceManager {
     private boolean mLeAudioCallbackRegistered = false;
     private BluetoothLeAudio mBluetoothLeAudioService;
     private boolean mLeAudioSetAsCommunicationDevice = false;
+    private String mLeAudioDevice;
     private boolean mHearingAidSetAsCommunicationDevice = false;
     private BluetoothDevice mBluetoothHearingAidActiveDeviceCache;
     private BluetoothAdapter mBluetoothAdapter;
@@ -422,11 +423,15 @@ public class BluetoothDeviceManager {
 
     public void clearLeAudioCommunicationDevice() {
         Log.i(this, "clearLeAudioCommunicationDevice: mLeAudioSetAsCommunicationDevice = " +
-                mLeAudioSetAsCommunicationDevice);
+                mLeAudioSetAsCommunicationDevice + " device = " + mLeAudioDevice);
         if (!mLeAudioSetAsCommunicationDevice) {
             return;
         }
         mLeAudioSetAsCommunicationDevice = false;
+        if (mLeAudioDevice != null) {
+            mBluetoothRouteManager.onAudioLost(mLeAudioDevice);
+            mLeAudioDevice = null;
+        }
 
         if (mAudioManager == null) {
             Log.i(this, "clearLeAudioCommunicationDevice: mAudioManager is null");
@@ -435,7 +440,6 @@ public class BluetoothDeviceManager {
         if (mAudioManager.getCommunicationDevice() != null
                 && mAudioManager.getCommunicationDevice().getType()
                 == AudioDeviceInfo.TYPE_BLE_HEADSET) {
-            mBluetoothRouteManager.onAudioLost(mAudioManager.getCommunicationDevice().getAddress());
             mAudioManager.clearCommunicationDevice();
         }
     }
@@ -503,6 +507,7 @@ public class BluetoothDeviceManager {
             Log.i(this, " bleHeadset device set");
             mBluetoothRouteManager.onAudioOn(bleHeadset.getAddress());
             mLeAudioSetAsCommunicationDevice = true;
+            mLeAudioDevice = bleHeadset.getAddress();
         }
         return result;
     }
