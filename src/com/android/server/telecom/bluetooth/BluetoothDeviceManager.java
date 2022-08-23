@@ -27,6 +27,7 @@ import android.bluetooth.BluetoothStatusCodes;
 import android.content.Context;
 import android.media.AudioManager;
 import android.media.AudioDeviceInfo;
+import android.media.audio.common.AudioDevice;
 import android.telecom.Log;
 import android.util.LocalLog;
 
@@ -437,8 +438,9 @@ public class BluetoothDeviceManager {
             Log.i(this, "clearLeAudioCommunicationDevice: mAudioManager is null");
             return;
         }
-        if (mAudioManager.getCommunicationDevice() != null
-                && mAudioManager.getCommunicationDevice().getType()
+
+        AudioDeviceInfo audioDeviceInfo = mAudioManager.getCommunicationDevice();
+        if (audioDeviceInfo != null && audioDeviceInfo.getType()
                 == AudioDeviceInfo.TYPE_BLE_HEADSET) {
             mAudioManager.clearCommunicationDevice();
         }
@@ -456,8 +458,9 @@ public class BluetoothDeviceManager {
             Log.i(this, "clearHearingAidCommunicationDevice: mAudioManager is null");
             return;
         }
-        if (mAudioManager.getCommunicationDevice() != null
-                && mAudioManager.getCommunicationDevice().getType()
+
+        AudioDeviceInfo audioDeviceInfo = mAudioManager.getCommunicationDevice();
+        if (audioDeviceInfo != null && audioDeviceInfo.getType()
                 == AudioDeviceInfo.TYPE_HEARING_AID) {
             mAudioManager.clearCommunicationDevice();
         }
