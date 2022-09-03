@@ -890,7 +890,8 @@ public class CallsManager extends Call.ListenerBase
                 }
                 mCallLogManager.logCall(incomingCall, Calls.BLOCKED_TYPE,
                         result.shouldShowNotification, result);
-            } else if (result.shouldShowNotification) {
+            }
+            if (result.shouldShowNotification) {
                 Log.i(this, "onCallScreeningCompleted: blocked call, showing notification.");
                 mMissedCallNotifier.showMissedCallNotification(
                         new MissedCallNotifier.CallInfo(incomingCall));
@@ -5146,8 +5147,9 @@ public class CallsManager extends Call.ListenerBase
                 !mCalls.contains(call)) {
             extras.remove(EXTRA_KEY_DISPLAY_ERROR_DIALOG);
             DisconnectCause disconnectCause = call.getDisconnectCause();
-            if (!TextUtils.isEmpty(disconnectCause.getDescription()) && (disconnectCause.getCode()
-                    == DisconnectCause.ERROR)) {
+            if (!TextUtils.isEmpty(disconnectCause.getDescription()) && ((disconnectCause.getCode()
+                    == DisconnectCause.ERROR) || (disconnectCause.getCode()
+                    == DisconnectCause.RESTRICTED))) {
                 Intent errorIntent = new Intent(mContext, ErrorDialogActivity.class);
                 errorIntent.putExtra(ErrorDialogActivity.ERROR_MESSAGE_STRING_EXTRA,
                         disconnectCause.getDescription());
