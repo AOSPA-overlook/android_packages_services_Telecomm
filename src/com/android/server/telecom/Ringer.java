@@ -757,9 +757,11 @@ public class Ringer {
 
     private boolean isVibratorEnabled(Context context) {
         AudioManager audioManager = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        // Use AudioManager#getRingerMode for more accurate result, instead of
+        // AudioManager#getRingerModeInternal which only useful for volume controllers
         return mVibrator.hasVibrator()
                 && mSystemSettingsUtil.isRingVibrationEnabled(context)
-                && audioManager.getRingerModeInternal() != AudioManager.RINGER_MODE_SILENT;
+                && audioManager.getRingerMode() != AudioManager.RINGER_MODE_SILENT;
     }
 
     public void startVibratingForOutgoingCallActive() {
