@@ -2162,6 +2162,16 @@ public class CallsManager extends Call.ListenerBase
         boolean endEarly = false;
         String disconnectReason = "";
         String callRedirectionApp = mRoleManagerAdapter.getDefaultCallRedirectionApp();
+        PhoneAccount phoneAccount = mPhoneAccountRegistrar
+                .getPhoneAccountUnchecked(phoneAccountHandle);
+        if (phoneAccount != null
+                && !phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER)) {
+            // Check if the phoneAccountHandle belongs to the current user
+            if (phoneAccountHandle != null &&
+                    !phoneAccountHandle.getUserHandle().equals(mCurrentUserHandle)) {
+                phoneAccountHandle = null;
+            }
+        }
 
         boolean isEmergencyNumber;
         try {
@@ -2196,9 +2206,9 @@ public class CallsManager extends Call.ListenerBase
             endEarly = true;
             disconnectReason = "Null handle from Call Redirection Service";
         } else if (phoneAccountHandle == null) {
-            Log.w(this, "onCallRedirectionComplete: phoneAccountHandle is null");
+            Log.w(this, "onCallRedirectionComplete: phoneAccountHandle is unavailable");
             endEarly = true;
-            disconnectReason = "Null phoneAccountHandle from Call Redirection Service";
+            disconnectReason = "Unavailable phoneAccountHandle from Call Redirection Service";
         } else if (isEmergencyNumber) {
             Log.w(this, "onCallRedirectionComplete: emergency number %s is redirected from Call"
                     + " Redirection Service", handle.getSchemeSpecificPart());
@@ -2219,6 +2229,7 @@ public class CallsManager extends Call.ListenerBase
             return;
         }
 
+        final PhoneAccountHandle finalPhoneAccountHandle = phoneAccountHandle;
         if (uiAction.equals(CallRedirectionProcessor.UI_TYPE_USER_DEFINED_ASK_FOR_CONFIRM)) {
             Log.addEvent(call, LogUtils.Events.REDIRECTION_USER_CONFIRMATION);
             mPendingRedirectedOutgoingCall = call;
@@ -2228,7 +2239,7 @@ public class CallsManager extends Call.ListenerBase
                         @Override
                         public void loggedRun() {
                             Log.addEvent(call, LogUtils.Events.REDIRECTION_USER_CONFIRMED);
-                            call.setTargetPhoneAccount(phoneAccountHandle);
+                            call.setTargetPhoneAccount(finalPhoneAccountHandle);
                             placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn,
                                     videoState);
                         }
@@ -2238,7 +2249,7 @@ public class CallsManager extends Call.ListenerBase
                     new Runnable("CM.oCRC", mLock) {
                         @Override
                         public void loggedRun() {
-                            call.setTargetPhoneAccount(phoneAccountHandle);
+                            call.setTargetPhoneAccount(finalPhoneAccountHandle);
                             placeOutgoingCall(call, handle, null, speakerphoneOn,
                                     videoState);
                         }
@@ -5637,8 +5648,12 @@ public class CallsManager extends Call.ListenerBase
         @Override
         public void performAction() {
             synchronized (mLock) {
-                Log.d(this, "perform set call state for %s, state = %s", mCall, mState);
-                setCallState(mCall, mState, mTag);
+                Log.d(this, "performAction: current call state %s", mCall);
+                if (mCall.getState() != CallState.DISCONNECTED
+                        && mCall.getState() != CallState.DISCONNECTING) {
+                    Log.d(this, "performAction: setting to new state = %s", mState);
+                    setCallState(mCall, mState, mTag);
+                }
             }
         }
     }
@@ -5869,6 +5884,15 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public Ringer getRinger() {
         return mRinger;
+    }
+
+    /**
+     * This method should only be used for testing.
+     */
+    @VisibleForTesting
+    public void createActionSetCallStateAndPerformAction(Call call, int state, String tag) {
+        ActionSetCallState actionSetCallState = new ActionSetCallState(call, state, tag);
+        actionSetCallState.performAction();
     }
 
     /* Determines whether the two calls have the same target phone account */

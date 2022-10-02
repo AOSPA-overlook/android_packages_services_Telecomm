@@ -359,9 +359,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         if (call.isAlive() && !call.isDisconnectHandledViaFuture()) {
                             mCallsManager.markCallAsDisconnected(
                                     call, new DisconnectCause(DisconnectCause.REMOTE));
-                        } else {
-                            mCallsManager.markCallAsRemoved(call);
                         }
+                        mCallsManager.markCallAsRemoved(call);
                     }
                 }
             } catch (Throwable t) {
