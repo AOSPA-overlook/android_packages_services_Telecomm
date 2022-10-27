@@ -920,7 +920,8 @@ public class CallsManager extends Call.ListenerBase
 
     private static boolean isIncomingVideoCall(Call call) {
         return (!VideoProfile.isAudioOnly(call.getVideoState()) &&
-            call.getState() == CallState.RINGING);
+            call.getState() == CallState.RINGING) && !(call.isCrsCall() &&
+            (call.getOriginalCallType() == VideoProfile.STATE_AUDIO_ONLY));
     }
 
     /**
