@@ -184,7 +184,7 @@ public class BluetoothStateReceiver extends BroadcastReceiver {
                     /* In Le Audio case, once device got Active, the Telecom needs to make sure it
                      * is set as communication device before we can say that BT_AUDIO_IS_ON
                      */
-                    if (!mBluetoothDeviceManager.setLeAudioCommunicationDevice()) {
+                    if (!mBluetoothDeviceManager.setLeAudioCommunicationDevice(device)) {
                         Log.w(LOG_TAG,
                                 "Device %s cannot be use as LE audio communication device.",
                                 device);
