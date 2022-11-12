@@ -323,7 +323,8 @@ public class InCallController extends CallsManagerListenerBase implements
             if (!mContext.bindServiceAsUser(intent, mServiceConnection,
                         Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE |
                         Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS |
-                        Context.BIND_ABOVE_CLIENT,
+                        Context.BIND_ABOVE_CLIENT
+                        | Context.BIND_SCHEDULE_LIKE_TOP_APP,
                         UserHandle.CURRENT)) {
                 Log.w(this, "Failed to connect.");
                 mIsConnected = false;
