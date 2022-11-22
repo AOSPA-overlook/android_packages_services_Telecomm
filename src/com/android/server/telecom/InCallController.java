@@ -1986,6 +1986,9 @@ public class InCallController extends CallsManagerListenerBase implements
             List<ComponentName> componentsUpdated = new ArrayList<>();
             for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.entrySet()) {
                 InCallServiceInfo info = entry.getKey();
+                if (info == null) {
+                    continue;
+                }
                 if (call.isExternalCall() && !info.isExternalCallsSupported()) {
                     continue;
                 }
