@@ -794,14 +794,14 @@ public class BluetoothRouteManager extends StateMachine {
             for (BluetoothDevice device : bluetoothAdapter.getActiveDevices(
                         BluetoothProfile.HEADSET)) {
                 hfpAudioOnDevice = device;
-                break;
-            }
-
-            if (hfpAudioOnDevice != null && bluetoothHeadset.getAudioState(hfpAudioOnDevice)
-                    == BluetoothHeadset.STATE_AUDIO_DISCONNECTED) {
-                hfpAudioOnDevice = null;
-            } else {
-                activeDevices++;
+                if (hfpAudioOnDevice != null && bluetoothHeadset.getAudioState(hfpAudioOnDevice)
+                        == BluetoothHeadset.STATE_AUDIO_DISCONNECTED) {
+                    hfpAudioOnDevice = null;
+                    break;
+                } else if (hfpAudioOnDevice != null) {
+                    activeDevices++;
+                    break;
+                }
             }
         }
 
