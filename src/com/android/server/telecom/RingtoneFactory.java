@@ -124,10 +124,6 @@ public class RingtoneFactory {
             .build();
     }
 
-    public Ringtone getRingtone(Call incomingCall) {
-        return getRingtone(incomingCall, null, false);
-    }
-
     /** Returns a ringtone to be used when ringer is not audible for the incoming call. */
     @Nullable
     public Ringtone getHapticOnlyRingtone() {

@@ -193,6 +193,8 @@ public class ParcelableCallUtils {
         String callerDisplayName = call.getCallerDisplayNamePresentation() ==
                 TelecomManager.PRESENTATION_ALLOWED ?  call.getCallerDisplayName() : null;
 
+        Uri contactPhotoUri = call.getContactPhotoUri();
+
         List<Call> conferenceableCalls = call.getConferenceableCalls();
         List<String> conferenceableCallIds = new ArrayList<String>(conferenceableCalls.size());
         for (Call otherCall : conferenceableCalls) {
@@ -252,6 +254,7 @@ public class ParcelableCallUtils {
                 .setCallerNumberVerificationStatus(call.getCallerNumberVerificationStatus())
                 .setContactDisplayName(call.getName())
                 .setActiveChildCallId(activeChildCallId)
+                .setContactPhotoUri(contactPhotoUri)
                 .createParcelableCall();
     }
 
