@@ -30,8 +30,7 @@
     <string name="notification_disconnectedCall_body" msgid="600491714584417536">"Hovor s volajícím <xliff:g id="CALLER">%s</xliff:g> byl odpojen, protože začalo být prováděno tísňové volání."</string>
     <string name="notification_disconnectedCall_generic_body" msgid="5282765206349184853">"Váš hovor byl odpojen, protože bylo zahájeno tísňové volání."</string>
     <string name="notification_audioProcessing_title" msgid="1619035039880584575">"Hovor na pozadí"</string>
-    <!-- no translation found for notification_audioProcessing_body (8811420157964118913) -->
-    <skip />
+    <string name="notification_audioProcessing_body" msgid="8811420157964118913">"Aplikace <xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> zpracovává hovor na pozadí. Tato aplikace může v hovoru používat a přehrávat zvuk."</string>
     <string name="notification_incallservice_not_responding_title" msgid="5347557574288598548">"Aplikace <xliff:g id="IN_CALL_SERVICE_APP_NAME">%s</xliff:g> přestala reagovat"</string>
     <string name="notification_incallservice_not_responding_body" msgid="9209308270131968623">"Při hovoru byla použita předinstalovaná telefonní aplikace"</string>
     <string name="accessibility_call_muted" msgid="2968461092554300779">"Hovor ztlumen."</string>
@@ -124,4 +123,5 @@
     <string name="developer_title" msgid="9146088855661672353">"Nabídka pro vývojáře Telecomu"</string>
     <string name="toast_emergency_can_not_pull_call" msgid="9074229465338410869">"Během tísňového volání není možné přijímat hovory."</string>
     <string name="cancel" msgid="6733466216239934756">"Zrušit"</string>
+    <string name="back" msgid="6915955601805550206">"Zpět"</string>
 </resources>

@@ -30,8 +30,7 @@
     <string name="notification_disconnectedCall_body" msgid="600491714584417536">"Klic za stik <xliff:g id="CALLER">%s</xliff:g> je prekinjen zaradi vzpostavljanja klica v sili."</string>
     <string name="notification_disconnectedCall_generic_body" msgid="5282765206349184853">"Klic je prekinjen zaradi vzpostavljanja klica v sili."</string>
     <string name="notification_audioProcessing_title" msgid="1619035039880584575">"Klic v ozadju"</string>
-    <!-- no translation found for notification_audioProcessing_body (8811420157964118913) -->
-    <skip />
+    <string name="notification_audioProcessing_body" msgid="8811420157964118913">"<xliff:g id="AUDIO_PROCESSING_APP_NAME">%s</xliff:g> obdeluje klic v ozadju. Ta aplikacija morda dostopa do zvoka in ga predvaja prek klica."</string>
     <string name="notification_incallservice_not_responding_title" msgid="5347557574288598548">"Aplikacija <xliff:g id="IN_CALL_SERVICE_APP_NAME">%s</xliff:g> se ne odziva več"</string>
     <string name="notification_incallservice_not_responding_body" msgid="9209308270131968623">"Klic je bil opravljen prek aplikacije za klicanje, ki jo je v napravo namestil proizvajalec"</string>
     <string name="accessibility_call_muted" msgid="2968461092554300779">"Klic izključen."</string>
@@ -124,4 +123,5 @@
     <string name="developer_title" msgid="9146088855661672353">"Meni za razvijalce Telecom"</string>
     <string name="toast_emergency_can_not_pull_call" msgid="9074229465338410869">"Med klicem v sili ni mogoče sprejeti klicev."</string>
     <string name="cancel" msgid="6733466216239934756">"Prekliči"</string>
+    <string name="back" msgid="6915955601805550206">"Nazaj"</string>
 </resources>

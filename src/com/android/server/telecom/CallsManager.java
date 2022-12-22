@@ -697,12 +697,19 @@ public class CallsManager extends Call.ListenerBase
             phoneAccount == null || phoneAccount.getExtras() == null
                 ? new Bundle()
                 : phoneAccount.getExtras();
+        TelephonyManager telephonyManager = getTelephonyManager();
         if (incomingCall.hasProperty(Connection.PROPERTY_EMERGENCY_CALLBACK_MODE) ||
+                incomingCall.hasProperty(Connection.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL) ||
+                telephonyManager.isInEmergencySmsMode() ||
                 incomingCall.isSelfManaged() ||
                 extras.getBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING)) {
-            Log.i(this, "Skipping call filtering for %s (ecm=%b, selfMgd=%b, skipExtra=%b)",
+            Log.i(this, "Skipping call filtering for %s (ecm=%b, "
+                            + "networkIdentifiedEmergencyCall = %b, emergencySmsMode = %b, "
+                            + "selfMgd=%b, skipExtra=%b)",
                     incomingCall.getId(),
                     incomingCall.hasProperty(Connection.PROPERTY_EMERGENCY_CALLBACK_MODE),
+                    incomingCall.hasProperty(Connection.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL),
+                    telephonyManager.isInEmergencySmsMode(),
                     incomingCall.isSelfManaged(),
                     extras.getBoolean(PhoneAccount.EXTRA_SKIP_CALL_FILTERING));
             onCallFilteringComplete(incomingCall, new Builder()
@@ -1695,6 +1702,9 @@ public class CallsManager extends Call.ListenerBase
         // retrieved.
         CompletableFuture<List<PhoneAccountHandle>> setAccountHandle =
                 accountsForCall.whenCompleteAsync((potentialPhoneAccounts, exception) -> {
+                    if (exception != null){
+                        Log.e(TAG, exception, "Error retrieving list of potential phone accounts.");
+                    }
                     Log.i(CallsManager.this, "set outgoing call phone acct; potentialAccts=%s",
                             potentialPhoneAccounts);
                     PhoneAccountHandle phoneAccountHandle;
@@ -2162,6 +2172,16 @@ public class CallsManager extends Call.ListenerBase
         boolean endEarly = false;
         String disconnectReason = "";
         String callRedirectionApp = mRoleManagerAdapter.getDefaultCallRedirectionApp();
+        PhoneAccount phoneAccount = mPhoneAccountRegistrar
+                .getPhoneAccountUnchecked(phoneAccountHandle);
+        if (phoneAccount != null
+                && !phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER)) {
+            // Check if the phoneAccountHandle belongs to the current user
+            if (phoneAccountHandle != null &&
+                    !phoneAccountHandle.getUserHandle().equals(mCurrentUserHandle)) {
+                phoneAccountHandle = null;
+            }
+        }
 
         boolean isEmergencyNumber;
         try {
@@ -2196,9 +2216,9 @@ public class CallsManager extends Call.ListenerBase
             endEarly = true;
             disconnectReason = "Null handle from Call Redirection Service";
         } else if (phoneAccountHandle == null) {
-            Log.w(this, "onCallRedirectionComplete: phoneAccountHandle is null");
+            Log.w(this, "onCallRedirectionComplete: phoneAccountHandle is unavailable");
             endEarly = true;
-            disconnectReason = "Null phoneAccountHandle from Call Redirection Service";
+            disconnectReason = "Unavailable phoneAccountHandle from Call Redirection Service";
         } else if (isEmergencyNumber) {
             Log.w(this, "onCallRedirectionComplete: emergency number %s is redirected from Call"
                     + " Redirection Service", handle.getSchemeSpecificPart());
@@ -2219,6 +2239,7 @@ public class CallsManager extends Call.ListenerBase
             return;
         }
 
+        final PhoneAccountHandle finalPhoneAccountHandle = phoneAccountHandle;
         if (uiAction.equals(CallRedirectionProcessor.UI_TYPE_USER_DEFINED_ASK_FOR_CONFIRM)) {
             Log.addEvent(call, LogUtils.Events.REDIRECTION_USER_CONFIRMATION);
             mPendingRedirectedOutgoingCall = call;
@@ -2228,7 +2249,7 @@ public class CallsManager extends Call.ListenerBase
                         @Override
                         public void loggedRun() {
                             Log.addEvent(call, LogUtils.Events.REDIRECTION_USER_CONFIRMED);
-                            call.setTargetPhoneAccount(phoneAccountHandle);
+                            call.setTargetPhoneAccount(finalPhoneAccountHandle);
                             placeOutgoingCall(call, handle, gatewayInfo, speakerphoneOn,
                                     videoState);
                         }
@@ -2238,7 +2259,7 @@ public class CallsManager extends Call.ListenerBase
                     new Runnable("CM.oCRC", mLock) {
                         @Override
                         public void loggedRun() {
-                            call.setTargetPhoneAccount(phoneAccountHandle);
+                            call.setTargetPhoneAccount(finalPhoneAccountHandle);
                             placeOutgoingCall(call, handle, null, speakerphoneOn,
                                     videoState);
                         }
@@ -2480,13 +2501,17 @@ public class CallsManager extends Call.ListenerBase
                     // Drop any ongoing self-managed calls to make way for an emergency call.
                     disconnectSelfManagedCalls("place emerg call" /* reason */);
                 }
-
-                if (mPendingMOEmerCall == null) {
-                    // If the account has been set, proceed to place the outgoing call.
-                    // Otherwise the connection will be initiated when the account is
-                    // set by the user.
+                try {
                     call.startCreateConnection(mPhoneAccountRegistrar);
+                } catch (Exception exception) {
+                    // If an exceptions is thrown while creating the connection, disconnect.
+                    Log.e(TAG, exception, "Exception thrown while establishing connection.");
+                    markCallAsDisconnected(call,
+                            new DisconnectCause(DisconnectCause.ERROR,
+                            "Failed to create the connection."));
+                    markCallAsRemoved(call);
                 }
+
             }
         } else if (mPhoneAccountRegistrar.getCallCapablePhoneAccounts(
                 requireCallCapableAccountByHandle ? callHandleScheme : null, false,
@@ -5637,8 +5662,12 @@ public class CallsManager extends Call.ListenerBase
         @Override
         public void performAction() {
             synchronized (mLock) {
-                Log.d(this, "perform set call state for %s, state = %s", mCall, mState);
-                setCallState(mCall, mState, mTag);
+                Log.d(this, "performAction: current call state %s", mCall);
+                if (mCall.getState() != CallState.DISCONNECTED
+                        && mCall.getState() != CallState.DISCONNECTING) {
+                    Log.d(this, "performAction: setting to new state = %s", mState);
+                    setCallState(mCall, mState, mTag);
+                }
             }
         }
     }
@@ -5869,6 +5898,15 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public Ringer getRinger() {
         return mRinger;
+    }
+
+    /**
+     * This method should only be used for testing.
+     */
+    @VisibleForTesting
+    public void createActionSetCallStateAndPerformAction(Call call, int state, String tag) {
+        ActionSetCallState actionSetCallState = new ActionSetCallState(call, state, tag);
+        actionSetCallState.performAction();
     }
 
     /* Determines whether the two calls have the same target phone account */

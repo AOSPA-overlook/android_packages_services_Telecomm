@@ -37,7 +37,6 @@ import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.reset;
-import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.timeout;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -57,7 +56,7 @@ import android.os.UserHandle;
 import android.telecom.CallerInfo;
 import android.telecom.Connection;
 import android.telecom.DisconnectCause;
-import android.telecom.Log;
+import android.telecom.GatewayInfo;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
@@ -77,7 +76,6 @@ import com.android.server.telecom.CallDiagnosticServiceController;
 import com.android.server.telecom.CallState;
 import com.android.server.telecom.CallerInfoLookupHelper;
 import com.android.server.telecom.CallsManager;
-import com.android.server.telecom.CallsManagerListenerBase;
 import com.android.server.telecom.ClockProxy;
 import com.android.server.telecom.ConnectionServiceFocusManager;
 import com.android.server.telecom.ConnectionServiceFocusManager.ConnectionServiceFocusManagerFactory;
@@ -133,8 +131,12 @@ import java.util.concurrent.TimeUnit;
 @RunWith(JUnit4.class)
 public class CallsManagerTest extends TelecomTestCase {
     private static final int TEST_TIMEOUT = 5000;  // milliseconds
+    private static final int SECONDARY_USER_ID = 12;
     private static final PhoneAccountHandle SIM_1_HANDLE = new PhoneAccountHandle(
             ComponentName.unflattenFromString("com.foo/.Blah"), "Sim1");
+    private static final PhoneAccountHandle SIM_1_HANDLE_SECONDARY = new PhoneAccountHandle(
+            ComponentName.unflattenFromString("com.foo/.Blah"), "Sim1",
+            new UserHandle(SECONDARY_USER_ID));
     private static final PhoneAccountHandle SIM_2_HANDLE = new PhoneAccountHandle(
             ComponentName.unflattenFromString("com.foo/.Blah"), "Sim2");
     private static final PhoneAccountHandle CONNECTION_MGR_1_HANDLE = new PhoneAccountHandle(
@@ -165,11 +167,9 @@ public class CallsManagerTest extends TelecomTestCase {
     private static final Uri TEST_ADDRESS = Uri.parse("tel:555-1212");
     private static final Uri TEST_ADDRESS2 = Uri.parse("tel:555-1213");
     private static final Uri TEST_ADDRESS3 = Uri.parse("tel:555-1214");
-    private static final Map<Uri, PhoneAccountHandle> CONTACT_PREFERRED_ACCOUNT =
-            new HashMap<Uri, PhoneAccountHandle>() {{
-                put(TEST_ADDRESS2, SIM_1_HANDLE);
-                put(TEST_ADDRESS3, SIM_2_HANDLE);
-    }};
+    private static final Map<Uri, PhoneAccountHandle> CONTACT_PREFERRED_ACCOUNT = Map.of(
+            TEST_ADDRESS2, SIM_1_HANDLE,
+            TEST_ADDRESS3, SIM_2_HANDLE);
 
     private static int sCallId = 1;
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
@@ -942,6 +942,43 @@ public class CallsManagerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
+    public void testNoFilteringOfNetworkIdentifiedEmergencyCalls() {
+        // GIVEN an incoming call which is network identified as an emergency call.
+        Call incomingCall = addSpyCall(CallState.NEW);
+        incomingCall.setConnectionProperties(Connection.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL);
+        doReturn(false).when(incomingCall).can(Connection.CAPABILITY_HOLD);
+        doReturn(false).when(incomingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
+        doReturn(true).when(incomingCall)
+                .hasProperty(Connection.PROPERTY_NETWORK_IDENTIFIED_EMERGENCY_CALL);
+        doReturn(true).when(incomingCall).setState(anyInt(), any());
+
+        // WHEN the incoming call is successfully added.
+        mCallsManager.onSuccessfulIncomingCall(incomingCall);
+
+        // THEN the incoming call is not using call filtering
+        verify(incomingCall).setIsUsingCallFiltering(eq(false));
+    }
+
+    @SmallTest
+    @Test
+    public void testNoFilteringOfEmergencySmsModeCalls() {
+        // GIVEN an incoming call which is network identified as an emergency call.
+        Call incomingCall = addSpyCall(CallState.NEW);
+        when(mComponentContextFixture.getTelephonyManager().isInEmergencySmsMode())
+                .thenReturn(true);
+        doReturn(false).when(incomingCall).can(Connection.CAPABILITY_HOLD);
+        doReturn(false).when(incomingCall).can(Connection.CAPABILITY_SUPPORT_HOLD);
+        doReturn(true).when(incomingCall).setState(anyInt(), any());
+
+        // WHEN the incoming call is successfully added.
+        mCallsManager.onSuccessfulIncomingCall(incomingCall);
+
+        // THEN the incoming call is not using call filtering
+        verify(incomingCall).setIsUsingCallFiltering(eq(false));
+    }
+
+    @SmallTest
+    @Test
     public void testAcceptIncomingCallWhenHeadsetMediaButtonShortPress() {
         // GIVEN an incoming call
         Call incomingCall = addSpyCall();
@@ -1695,6 +1732,39 @@ public class CallsManagerTest extends TelecomTestCase {
         mCallsManager.onCallFilteringComplete(callSpy, result, false /* timeout */);
         verify(mMissedCallNotifier).showMissedCallNotification(
                 any(MissedCallNotifier.CallInfo.class));
+    }
+
+    @Test
+    public void testSetStateOnlyCalledOnce() {
+        // GIVEN a new self-managed call
+        Call newCall = addSpyCall();
+        doReturn(true).when(newCall).isSelfManaged();
+        newCall.setState(CallState.DISCONNECTED, "");
+
+        // WHEN ActionSetCallState is given a disconnect call
+        assertEquals(CallState.DISCONNECTED, newCall.getState());
+        // attempt to set the call active
+        mCallsManager.createActionSetCallStateAndPerformAction(newCall, CallState.ACTIVE, "");
+
+        // THEN assert remains disconnected
+        assertEquals(CallState.DISCONNECTED, newCall.getState());
+    }
+
+    @SmallTest
+    @Test
+    public void testCrossUserCallRedirectionEndEarlyForIncapablePhoneAccount() {
+        when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(eq(SIM_1_HANDLE_SECONDARY)))
+                .thenReturn(SIM_1_ACCOUNT);
+        mCallsManager.onUserSwitch(UserHandle.SYSTEM);
+
+        Call callSpy = addSpyCall(CallState.NEW);
+        mCallsManager.onCallRedirectionComplete(callSpy, TEST_ADDRESS, SIM_1_HANDLE_SECONDARY,
+                new GatewayInfo("foo", TEST_ADDRESS2, TEST_ADDRESS), true /* speakerphoneOn */,
+                VideoProfile.STATE_AUDIO_ONLY, false /* shouldCancelCall */, "" /* uiAction */);
+
+        ArgumentCaptor<String> argumentCaptor = ArgumentCaptor.forClass(String.class);
+        verify(callSpy).disconnect(argumentCaptor.capture());
+        assertTrue(argumentCaptor.getValue().contains("Unavailable phoneAccountHandle"));
     }
 
     private Call addSpyCall() {

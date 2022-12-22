@@ -340,6 +340,8 @@ public class BluetoothDeviceManager {
                 /* Check if group is known. */
                 if (!mGroupsByDevice.containsKey(device)) {
                     int groupId = mBluetoothLeAudioService.getGroupId(device);
+                    Log.i(this, "onDeviceConnected: Device: " + device.getAddress()
+                           + " groupId: " + groupId);
                     /* If it is not yet assigned, then it will be provided in the callback */
                     if (groupId != BluetoothLeAudio.GROUP_ID_INVALID) {
                         mGroupsByDevice.put(device, groupId);
@@ -397,12 +399,14 @@ public class BluetoothDeviceManager {
     }
 
     public void disconnectAudio() {
+        Log.i(this, "disconnectAudio");
         disconnectSco();
         clearLeAudioCommunicationDevice();
         clearHearingAidCommunicationDevice();
     }
 
     public void disconnectSco() {
+        Log.i(this, "disconnectSco");
         if (mBluetoothHeadset == null) {
             Log.w(this, "Trying to disconnect audio but no headset service exists.");
         } else {
@@ -438,12 +442,13 @@ public class BluetoothDeviceManager {
         AudioDeviceInfo audioDeviceInfo = mAudioManager.getCommunicationDevice();
         if (audioDeviceInfo != null && audioDeviceInfo.getType()
                 == AudioDeviceInfo.TYPE_BLE_HEADSET) {
-            mBluetoothRouteManager.onAudioLost(audioDeviceInfo.getAddress());
             mAudioManager.clearCommunicationDevice();
         }
     }
 
     public void clearHearingAidCommunicationDevice() {
+        Log.i(this, "clearHearingAidCommunicationDevice: mHearingAidSetAsCommunicationDevice = " +
+                mHearingAidSetAsCommunicationDevice);
         if (!mHearingAidSetAsCommunicationDevice) {
             return;
         }
