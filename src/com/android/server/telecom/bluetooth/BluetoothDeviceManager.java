@@ -444,6 +444,7 @@ public class BluetoothDeviceManager {
                 == AudioDeviceInfo.TYPE_BLE_HEADSET) {
             mAudioManager.clearCommunicationDevice();
         }
+        mLeAudioSetAsCommunicationDevice = false;
     }
 
     public void clearHearingAidCommunicationDevice() {
@@ -452,8 +453,8 @@ public class BluetoothDeviceManager {
         if (!mHearingAidSetAsCommunicationDevice) {
             return;
         }
-        mHearingAidSetAsCommunicationDevice = false;
 
+        mHearingAidSetAsCommunicationDevice = false;
         if (mAudioManager == null) {
             Log.i(this, "clearHearingAidCommunicationDevice: mAudioManager is null");
             return;
@@ -464,6 +465,7 @@ public class BluetoothDeviceManager {
                 == AudioDeviceInfo.TYPE_HEARING_AID) {
             mAudioManager.clearCommunicationDevice();
         }
+        mHearingAidSetAsCommunicationDevice = false;
     }
 
     public boolean setLeAudioCommunicationDevice(BluetoothDevice bleDevice) {
