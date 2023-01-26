@@ -1292,6 +1292,27 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mSilentRingingRequested;
     }
 
+    public void setCallIsSuppressedByDoNotDisturb(boolean isCallSuppressed) {
+        Bundle bundle = new Bundle();
+        bundle.putBoolean(android.telecom.Call.EXTRA_IS_SUPPRESSED_BY_DO_NOT_DISTURB,
+                isCallSuppressed);
+        putExtras(SOURCE_CONNECTION_SERVICE, bundle);
+    }
+
+    public boolean isCallSuppressedByDoNotDisturb() {
+        if (getExtras() == null) {
+            return false;
+        }
+        return getExtras().getBoolean(android.telecom.Call.EXTRA_IS_SUPPRESSED_BY_DO_NOT_DISTURB);
+    }
+
+    public boolean wasDndCheckComputedForCall() {
+        if (getExtras() == null) {
+            return false;
+        }
+        return getExtras().containsKey(android.telecom.Call.EXTRA_IS_SUPPRESSED_BY_DO_NOT_DISTURB);
+    }
+
     @VisibleForTesting
     public boolean isConference() {
         return mIsConference;
@@ -1414,6 +1435,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         }
     }
 
+    public Uri getContactPhotoUri() {
+        return mCallerInfo != null ? mCallerInfo.getContactDisplayPhotoUri() : null;
+    }
+
     public String getCallerDisplayName() {
         return mCallerDisplayName;
     }
@@ -1430,6 +1455,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             for (Listener l : mListeners) {
                 l.onCallerDisplayNameChanged(this);
             }
+        }
+    }
+
+    void setContactPhotoUri(Uri contactPhotoUri) {
+        if (mCallerInfo != null) {
+            mCallerInfo.SetContactDisplayPhotoUri(contactPhotoUri);
         }
     }
 
@@ -2259,9 +2290,9 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         Log.v(this, "handleCreateConnectionSuccessful %s", connection);
         setTargetPhoneAccount(connection.getPhoneAccount());
         setHandle(connection.getHandle(), connection.getHandlePresentation());
+
         setCallerDisplayName(
                 connection.getCallerDisplayName(), connection.getCallerDisplayNamePresentation());
-
         setConnectionCapabilities(connection.getConnectionCapabilities());
         setConnectionProperties(connection.getConnectionProperties());
         setIsVoipAudioMode(connection.getIsVoipAudioMode());
@@ -3338,9 +3369,15 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             return false;
         }
 
+        if (!isSimCall()) {
+            // Incoming calls to a specific sim can only respond back using SMS.
+            return false;
+        }
+
         // Is there a valid SMS application on the phone?
-        if (mContext.getSystemService(TelephonyManager.class)
-                .getAndUpdateDefaultRespondViaMessageApplication() == null) {
+        TelephonyManager simTm = mContext.getSystemService(TelephonyManager.class)
+                .createForPhoneAccountHandle(getTargetPhoneAccount());
+        if ((simTm == null) || (simTm.getAndUpdateDefaultRespondViaMessageApplication() == null)) {
             return false;
         }
 
@@ -3425,11 +3462,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             return;
         }
 
+        String newName = callerInfo.getName();
+        boolean contactNameChanged = mCallerInfo == null || !mCallerInfo.getName().equals(newName);
+
         mCallerInfo = callerInfo;
         Log.i(this, "CallerInfo received for %s: %s", Log.piiHandle(mHandle), callerInfo);
 
-        if (mCallerInfo.getContactDisplayPhotoUri() == null ||
-                mCallerInfo.cachedPhotoIcon != null || mCallerInfo.cachedPhoto != null) {
+        if (mCallerInfo.getContactDisplayPhotoUri() == null || mCallerInfo.cachedPhotoIcon != null
+            || mCallerInfo.cachedPhoto != null || contactNameChanged) {
             for (Listener l : mListeners) {
                 l.onCallerInfoChanged(this);
             }
