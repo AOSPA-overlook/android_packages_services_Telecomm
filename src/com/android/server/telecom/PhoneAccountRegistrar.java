@@ -248,7 +248,7 @@ public class PhoneAccountRegistrar {
         }
 
         List<PhoneAccountHandle> outgoing = getCallCapablePhoneAccounts(uriScheme, false,
-                userHandle);
+                userHandle, false);
         switch (outgoing.size()) {
             case 0:
                 // There are no accounts, so there can be no default
@@ -323,7 +323,7 @@ public class PhoneAccountRegistrar {
         }
         // Get the PhoneAccount with the same group Id (and same ComponentName) that is not the
         // newAccount that was just added
-        List<PhoneAccount> accounts = getAllPhoneAccounts(userHandle).stream()
+        List<PhoneAccount> accounts = getAllPhoneAccounts(userHandle, false).stream()
                 .filter(account -> groupId.equals(account.getGroupId()) &&
                         !account.getAccountHandle().equals(excludePhoneAccountHandle) &&
                         Objects.equals(account.getAccountHandle().getComponentName(),
@@ -469,7 +469,7 @@ public class PhoneAccountRegistrar {
             // loop through and look for any connection manager in the same package.
             List<PhoneAccountHandle> allSimCallManagers = getPhoneAccountHandles(
                     PhoneAccount.CAPABILITY_CONNECTION_MANAGER, null, null,
-                    true /* includeDisabledAccounts */, userHandle);
+                    true /* includeDisabledAccounts */, userHandle, false);
             for (PhoneAccountHandle accountHandle : allSimCallManagers) {
                 ComponentName component = accountHandle.getComponentName();
 
@@ -725,22 +725,19 @@ public class PhoneAccountRegistrar {
      *
      * @return The list of {@link PhoneAccountHandle}s.
      */
-    public List<PhoneAccountHandle> getAllPhoneAccountHandles(UserHandle userHandle) {
-        return getPhoneAccountHandles(0, null, null, false, userHandle);
+    public List<PhoneAccountHandle> getAllPhoneAccountHandles(UserHandle userHandle,
+            boolean crossUserAccess) {
+        return getPhoneAccountHandles(0, null, null, false, userHandle, crossUserAccess);
     }
 
-    public List<PhoneAccount> getAllPhoneAccounts(UserHandle userHandle) {
-        return getPhoneAccounts(0, null, null, false, userHandle);
-    }
-
-    public List<PhoneAccount> getAllPhoneAccountsOfCurrentUser() {
-        return getAllPhoneAccounts(mCurrentUserHandle);
+    public List<PhoneAccount> getAllPhoneAccounts(UserHandle userHandle, boolean crossUserAccess) {
+        return getPhoneAccounts(0, null, null, false, mCurrentUserHandle, crossUserAccess);
     }
 
     public List<PhoneAccountHandle> getEmergencyCallOnlyPhoneAccounts(String uriScheme,
             UserHandle userHandle) {
         return getPhoneAccountHandles(PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY,
-                0, uriScheme, null, false, userHandle);
+                0, uriScheme, null, false, userHandle, false /*crossUserAccess*/);
     }
 
     /**
@@ -754,9 +751,11 @@ public class PhoneAccountRegistrar {
      * @return The phone account handles.
      */
     public List<PhoneAccountHandle> getCallCapablePhoneAccounts(
-            String uriScheme, boolean includeDisabledAccounts, UserHandle userHandle) {
+            String uriScheme, boolean includeDisabledAccounts,
+            UserHandle userHandle, boolean crossUserAccess) {
         return getCallCapablePhoneAccounts(uriScheme, includeDisabledAccounts, userHandle,
-                0 /* capabilities */, PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY);
+                0 /* capabilities */, PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY,
+                crossUserAccess);
     }
 
     /**
@@ -773,11 +772,11 @@ public class PhoneAccountRegistrar {
      */
     public List<PhoneAccountHandle> getCallCapablePhoneAccounts(
             String uriScheme, boolean includeDisabledAccounts, UserHandle userHandle,
-            int capabilities, int excludedCapabilities) {
+            int capabilities, int excludedCapabilities, boolean crossUserAccess) {
         return getPhoneAccountHandles(
                 PhoneAccount.CAPABILITY_CALL_PROVIDER | capabilities,
                 excludedCapabilities /*excludedCapabilities*/,
-                uriScheme, null, includeDisabledAccounts, userHandle);
+                uriScheme, null, includeDisabledAccounts, userHandle, crossUserAccess);
     }
 
     /**
@@ -795,12 +794,7 @@ public class PhoneAccountRegistrar {
                 PhoneAccount.CAPABILITY_SELF_MANAGED,
                 PhoneAccount.CAPABILITY_EMERGENCY_CALLS_ONLY /* excludedCapabilities */,
                 null /* uriScheme */, null /* packageName */, false /* includeDisabledAccounts */,
-                userHandle);
-    }
-
-    public List<PhoneAccountHandle> getCallCapablePhoneAccountsOfCurrentUser(
-            String uriScheme, boolean includeDisabledAccounts) {
-        return getCallCapablePhoneAccounts(uriScheme, includeDisabledAccounts, mCurrentUserHandle);
+                userHandle, false);
     }
 
     /**
@@ -809,7 +803,7 @@ public class PhoneAccountRegistrar {
     public List<PhoneAccountHandle> getSimPhoneAccounts(UserHandle userHandle) {
         return getPhoneAccountHandles(
                 PhoneAccount.CAPABILITY_CALL_PROVIDER | PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION,
-                null, null, false, userHandle);
+                null, null, false, userHandle, false);
     }
 
     public List<PhoneAccountHandle> getSimPhoneAccountsOfCurrentUser() {
@@ -824,7 +818,7 @@ public class PhoneAccountRegistrar {
          */
     public List<PhoneAccountHandle> getPhoneAccountsForPackage(String packageName,
             UserHandle userHandle) {
-        return getPhoneAccountHandles(0, null, packageName, false, userHandle);
+        return getPhoneAccountHandles(0, null, packageName, false, userHandle, false);
     }
 
     /**
@@ -1272,9 +1266,10 @@ public class PhoneAccountRegistrar {
             String uriScheme,
             String packageName,
             boolean includeDisabledAccounts,
-            UserHandle userHandle) {
+            UserHandle userHandle,
+            boolean crossUserAccess) {
         return getPhoneAccountHandles(capabilities, 0 /*excludedCapabilities*/, uriScheme,
-                packageName, includeDisabledAccounts, userHandle);
+                packageName, includeDisabledAccounts, userHandle, crossUserAccess);
     }
 
     /**
@@ -1287,12 +1282,13 @@ public class PhoneAccountRegistrar {
             String uriScheme,
             String packageName,
             boolean includeDisabledAccounts,
-            UserHandle userHandle) {
+            UserHandle userHandle,
+            boolean crossUserAccess) {
         List<PhoneAccountHandle> handles = new ArrayList<>();
 
         for (PhoneAccount account : getPhoneAccounts(
                 capabilities, excludedCapabilities, uriScheme, packageName,
-                includeDisabledAccounts, userHandle)) {
+                includeDisabledAccounts, userHandle, crossUserAccess)) {
             handles.add(account.getAccountHandle());
         }
         return handles;
@@ -1303,9 +1299,10 @@ public class PhoneAccountRegistrar {
             String uriScheme,
             String packageName,
             boolean includeDisabledAccounts,
-            UserHandle userHandle) {
+            UserHandle userHandle,
+            boolean crossUserAccess) {
         return getPhoneAccounts(capabilities, 0 /*excludedCapabilities*/, uriScheme, packageName,
-                includeDisabledAccounts, userHandle);
+                includeDisabledAccounts, userHandle, crossUserAccess);
     }
 
     /**
@@ -1325,7 +1322,8 @@ public class PhoneAccountRegistrar {
             String uriScheme,
             String packageName,
             boolean includeDisabledAccounts,
-            UserHandle userHandle) {
+            UserHandle userHandle,
+            boolean crossUserAccess) {
         List<PhoneAccount> accounts = new ArrayList<>(mState.accounts.size());
         for (PhoneAccount m : mState.accounts) {
             if (!(m.isEnabled() || includeDisabledAccounts)) {
@@ -1357,7 +1355,7 @@ public class PhoneAccountRegistrar {
                 // Not the right package name; skip this one.
                 continue;
             }
-            if (!isVisibleForUser(m, userHandle, false)) {
+            if (!crossUserAccess && !isVisibleForUser(m, userHandle, false)) {
                 // Account is not visible for the current user; skip this one.
                 continue;
             }
