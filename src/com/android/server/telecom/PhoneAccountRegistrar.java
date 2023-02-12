@@ -41,7 +41,6 @@ import android.os.UserManager;
 import android.provider.Settings;
 import android.telecom.CallAudioState;
 import android.telecom.ConnectionService;
-import android.telecom.DefaultDialerManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
@@ -58,7 +57,6 @@ import android.util.Xml;
 
 // TODO: Needed for move to system service: import com.android.internal.R;
 import com.android.internal.annotations.VisibleForTesting;
-import com.android.internal.util.FastXmlSerializer;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.internal.util.XmlUtils;
 
@@ -66,7 +64,6 @@ import org.xmlpull.v1.XmlPullParser;
 import org.xmlpull.v1.XmlPullParserException;
 import org.xmlpull.v1.XmlSerializer;
 
-import java.io.BufferedInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -85,12 +82,9 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.stream.Collector;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Handles writing and reading PhoneAccountHandle registration entries. This is a simple verbatim
@@ -160,6 +154,8 @@ public class PhoneAccountRegistrar {
     @VisibleForTesting
     public static final int EXPECTED_STATE_VERSION = 9;
     public static final int MAX_PHONE_ACCOUNT_REGISTRATIONS = 10;
+    public static final int MAX_PHONE_ACCOUNT_EXTAS_KEY_PAIR_LIMIT = 100;
+    public static final int MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT = 256;
 
     /** Keep in sync with the same in SipSettings.java */
     private static final String SIP_SHARED_PREFERENCES = "SIP_PREFERENCES";
@@ -865,7 +861,8 @@ public class PhoneAccountRegistrar {
     public void registerPhoneAccount(PhoneAccount account) {
         // Enforce the requirement that a connection service for a phone account has the correct
         // permission.
-        if (!phoneAccountRequiresBindPermission(account.getAccountHandle())) {
+        if (!hasTransactionalCallCapabilites(account) &&
+                !phoneAccountRequiresBindPermission(account.getAccountHandle())) {
             Log.w(this,
                     "Phone account %s does not have BIND_TELECOM_CONNECTION_SERVICE permission.",
                     account.getAccountHandle());
@@ -885,8 +882,61 @@ public class PhoneAccountRegistrar {
                             + " because the limit, " + MAX_PHONE_ACCOUNT_REGISTRATIONS
                             + ", has been reached");
         }
+        // Enforce a character limit on all PA and PAH string or char-sequence fields.
+        enforceCharacterLimit(account);
 
         addOrReplacePhoneAccount(account);
+    }
+
+    /**
+     * All {@link PhoneAccount} and{@link PhoneAccountHandle} String and Char-Sequence fields
+     * should be restricted to character limit of MAX_PHONE_ACCOUNT_CHAR_LIMIT to prevent exceptions
+     * when writing large character streams to XML-Serializer.
+     *
+     * @param account to enforce character limit checks on
+     */
+    public void enforceCharacterLimit(PhoneAccount account) {
+        if (account == null) {
+            return;
+        }
+        PhoneAccountHandle handle = account.getAccountHandle();
+
+        String[] fields =
+                {"Package Name", "Class Name", "PhoneAccountHandle Id", "Label", "ShortDescription",
+                        "GroupId"};
+        CharSequence[] args = {handle.getComponentName().getPackageName(),
+                handle.getComponentName().getClassName(), handle.getId(), account.getLabel(),
+                account.getShortDescription(), account.getGroupId()};
+
+        for (int i = 0; i < fields.length; i++) {
+            if (args[i] != null && args[i].length() > MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT) {
+                throw new IllegalArgumentException("The PhoneAccount or PhoneAccountHandle"
+                        + fields[i] + " field has an invalid character count. PhoneAccount and "
+                        + "PhoneAccountHandle String and Char-Sequence fields are limited to "
+                        + MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT + " characters.");
+            }
+        }
+
+        Bundle extras = account.getExtras();
+        if (extras != null) {
+            if (extras.keySet().size() > MAX_PHONE_ACCOUNT_EXTAS_KEY_PAIR_LIMIT) {
+                throw new IllegalArgumentException("The PhoneAccount#mExtras is limited to " +
+                        MAX_PHONE_ACCOUNT_EXTAS_KEY_PAIR_LIMIT + " (key,value) pairs.");
+            }
+
+            for (String key : extras.keySet()) {
+                Object value = extras.get(key);
+
+                if ((key != null && key.length() > MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT) ||
+                        (value instanceof String &&
+                                ((String) value).length() > MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT)) {
+                    throw new IllegalArgumentException("The PhoneAccount#mExtras contains a String"
+                            + " key or value that has an invalid character count. PhoneAccount and "
+                            + "PhoneAccountHandle String and Char-Sequence fields are limited to "
+                            + MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT + " characters.");
+                }
+            }
+        }
     }
 
     /**
@@ -903,6 +953,15 @@ public class PhoneAccountRegistrar {
         // source app provides or else an third party app could enable itself.
         boolean isEnabled = false;
         boolean isNewAccount;
+
+        // add self-managed capability for transactional accounts that are missing it
+        if (hasTransactionalCallCapabilites(account) &&
+                !account.hasCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)) {
+            account = account.toBuilder()
+                    .setCapabilities(account.getCapabilities()
+                            | PhoneAccount.CAPABILITY_SELF_MANAGED)
+                    .build();
+        }
 
         PhoneAccount oldAccount = getPhoneAccountUnchecked(account.getAccountHandle());
         if (oldAccount != null) {
@@ -1202,6 +1261,11 @@ public class PhoneAccountRegistrar {
             Log.w(this, "phoneAccount %s not found", phoneAccountHandle.getComponentName());
             return false;
         }
+
+        if (hasTransactionalCallCapabilites(getPhoneAccountUnchecked(phoneAccountHandle))) {
+            return false;
+        }
+
         for (ResolveInfo resolveInfo : resolveInfos) {
             ServiceInfo serviceInfo = resolveInfo.serviceInfo;
             if (serviceInfo == null) {
@@ -1218,6 +1282,15 @@ public class PhoneAccountRegistrar {
             }
         }
         return true;
+    }
+
+    @VisibleForTesting
+    public boolean hasTransactionalCallCapabilites(PhoneAccount phoneAccount) {
+        if (phoneAccount == null) {
+            return false;
+        }
+        return phoneAccount.hasCapabilities(
+                PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS);
     }
 
     //
