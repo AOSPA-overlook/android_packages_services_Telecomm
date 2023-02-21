@@ -173,6 +173,13 @@ public class CallsManager extends Call.ListenerBase
     // TODO: Consider renaming this CallsManagerPlugin.
     @VisibleForTesting
     public interface CallsManagerListener {
+        /**
+         * Informs listeners when a {@link Call} is newly created but not yet added to
+         * {@link #mCalls}.  This is where the call has not yet been created by the underlying
+         * {@link ConnectionService}.
+         * @param call the call.
+         */
+        default void onCallCreated(Call call) {}
         void onCallAdded(Call call);
         void onCallRemoved(Call call);
         void onCallStateChanged(Call call, int oldState, int newState);
@@ -414,6 +421,7 @@ public class CallsManager extends Call.ListenerBase
     private final EmergencyCallHelper mEmergencyCallHelper;
     private final RoleManagerAdapter mRoleManagerAdapter;
     private final CallEndpointController mCallEndpointController;
+    private final CallAnomalyWatchdog mCallAnomalyWatchdog;
     private final CallStreamingController mCallStreamingController;
 
     private final ConnectionServiceFocusManager.CallsManagerRequester mRequester =
@@ -553,7 +561,8 @@ public class CallsManager extends Call.ListenerBase
             CallDiagnosticServiceController callDiagnosticServiceController,
             RoleManagerAdapter roleManagerAdapter,
             ToastFactory toastFactory,
-            CallEndpointControllerFactory callEndpointControllerFactory) {
+            CallEndpointControllerFactory callEndpointControllerFactory,
+            CallAnomalyWatchdog callAnomalyWatchdog) {
         mContext = context;
         mLock = lock;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
@@ -649,6 +658,7 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mHeadsetMediaButton);
         mListeners.add(mProximitySensorManager);
         mListeners.add(audioProcessingNotification);
+        mListeners.add(callAnomalyWatchdog);
         mListeners.add(mCallStreamingController);
 
         // this needs to be after the mCallAudioManager
@@ -667,6 +677,7 @@ public class CallsManager extends Call.ListenerBase
         intentFilter.addAction(ACTION_MSIM_VOICE_CAPABILITY_CHANGED);
         context.registerReceiver(mReceiver, intentFilter, Context.RECEIVER_EXPORTED);
         mGraphHandlerThreads = new LinkedList<>();
+        mCallAnomalyWatchdog = callAnomalyWatchdog;
         QtiCarrierConfigHelper.getInstance().setup(mContext);
     }
 
@@ -870,8 +881,7 @@ public class CallsManager extends Call.ListenerBase
         }
 
         // Get rid of the call composer attachments that aren't wanted
-        if (result.mIsResponseFromSystemDialer && result.mCallScreeningResponse != null
-                && result.mCallScreeningResponse.getCallComposerAttachmentsToShow() >= 0) {
+        if (result.mIsResponseFromSystemDialer && result.mCallScreeningResponse != null) {
             int attachmentMask = result.mCallScreeningResponse.getCallComposerAttachmentsToShow();
             if ((attachmentMask
                     & CallScreeningService.CallResponse.CALL_COMPOSER_ATTACHMENT_LOCATION) == 0) {
@@ -1410,6 +1420,7 @@ public class CallsManager extends Call.ListenerBase
                 isConference, /* isConference */
                 mClockProxy,
                 mToastFactory);
+        notifyCallCreated(call);
 
         // set properties for transactional call
         if (extras.containsKey(TelecomManager.TRANSACTION_CALL_ID_KEY)) {
@@ -1420,7 +1431,7 @@ public class CallsManager extends Call.ListenerBase
             call.setTargetPhoneAccount(phoneAccountHandle);
         }
 
-        // Ensure new calls related to self-managed calls/connections are set as such.  This will
+        // Ensure new calls related to self-managed calls/connections are set as such. This will
         // be overridden when the actual connection is returned in startCreateConnection, however
         // doing this now ensures the logs and any other logic will treat this call as self-managed
         // from the moment it is created.
@@ -1596,6 +1607,8 @@ public class CallsManager extends Call.ListenerBase
                 false, /* isConference */
                 mClockProxy,
                 mToastFactory);
+        notifyCallCreated(call);
+
         call.initAnalytics();
 
         setIntentExtrasAndStartTime(call, extras);
@@ -1722,6 +1735,8 @@ public class CallsManager extends Call.ListenerBase
             }
 
             call.initAnalytics(callingPackage, creationLogs.toString());
+            // Let listeners know that we just created a new call but haven't added it yet.
+            notifyCallCreated(call);
 
             // Ensure new calls related to self-managed calls/connections are set as such.  This
             // will be overridden when the actual connection is returned in startCreateConnection,
@@ -3988,6 +4003,7 @@ public class CallsManager extends Call.ListenerBase
                 connectElapsedTime,
                 mClockProxy,
                 mToastFactory);
+        notifyCallCreated(call);
 
         setCallState(call, Call.getStateFromConnectionState(parcelableConference.getState()),
                 "new conference call");
@@ -5361,6 +5377,12 @@ public class CallsManager extends Call.ListenerBase
             pw.decreaseIndent();
         }
 
+        if (mCallAnomalyWatchdog != null) {
+            pw.println("mCallAnomalyWatchdog:");
+            pw.increaseIndent();
+            mCallAnomalyWatchdog.dump(pw);
+            pw.decreaseIndent();
+        }
         if (mDefaultDialerCache != null) {
             pw.println("mDefaultDialerCache:");
             pw.increaseIndent();
@@ -5496,6 +5518,14 @@ public class CallsManager extends Call.ListenerBase
         }
     }
 
+    /**
+     * Notify interested parties that a new call has been created, but not yet added to
+     * CallsManager.
+     * @param theCall the new call.
+     */
+    private void notifyCallCreated(final Call theCall) {
+        mListeners.forEach(l -> l.onCallCreated(theCall));
+    }
 
     /**
      * Notifies the {@link android.telecom.ConnectionService} associated with a
