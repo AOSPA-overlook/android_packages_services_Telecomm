@@ -24,6 +24,7 @@ import static android.Manifest.permission.READ_PHONE_NUMBERS;
 import static android.Manifest.permission.READ_PHONE_STATE;
 import static android.Manifest.permission.READ_PRIVILEGED_PHONE_STATE;
 
+import android.Manifest;
 import android.app.ActivityManager;
 import android.app.AppOpsManager;
 import android.content.ComponentName;
@@ -50,6 +51,7 @@ import android.test.suitebuilder.annotation.SmallTest;
 
 import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
+import com.android.server.telecom.AnomalyReporterAdapter;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallIntentProcessor;
 import com.android.server.telecom.CallState;
@@ -188,6 +190,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @Mock private ApplicationInfo mApplicationInfo;
     @Mock private ICallEventCallback mICallEventCallback;
     @Mock private TransactionManager mTransactionManager;
+    @Mock private AnomalyReporterAdapter mAnomalyReporterAdapter;
 
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
 
@@ -217,6 +220,8 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         doReturn(mContext).when(mContext).createContextAsUser(any(UserHandle.class), anyInt());
         doNothing().when(mContext).sendBroadcastAsUser(any(Intent.class), any(UserHandle.class),
                 anyString());
+        when(mContext.checkCallingOrSelfPermission(Manifest.permission.INTERACT_ACROSS_USERS))
+                .thenReturn(PackageManager.PERMISSION_GRANTED);
         doAnswer(invocation -> {
             mDefaultDialerObserver = invocation.getArgument(1);
             return null;
@@ -238,6 +243,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 mSettingsSecureAdapter,
                 mLock);
         telecomServiceImpl.setTransactionManager(mTransactionManager);
+        telecomServiceImpl.setAnomalyReporterAdapter(mAnomalyReporterAdapter);
         mTSIBinder = telecomServiceImpl.getBinder();
         mComponentContextFixture.setTelecomManager(mTelecomManager);
         when(mTelecomManager.getDefaultDialerPackage()).thenReturn(DEFAULT_DIALER_PACKAGE);
@@ -720,6 +726,23 @@ public class TelecomServiceImplTest extends TelecomTestCase {
                 .when(mContext).checkCallingOrSelfPermission(MODIFY_PHONE_STATE);
 
         registerPhoneAccountTestHelper(phoneAccount, true);
+    }
+
+    @SmallTest
+    @Test
+    public void testRegisterPhoneAccountWithoutPermissionAnomalyReported() throws RemoteException {
+        PhoneAccountHandle handle = new PhoneAccountHandle(
+                new ComponentName("package", "cs"), "test", Binder.getCallingUserHandle());
+        PhoneAccount account = makeSelfManagedPhoneAccount(handle).build();
+
+        List<String> enforcedPermissions = List.of(MANAGE_OWN_CALLS);
+        doThrow(new SecurityException()).when(mContext).enforceCallingOrSelfPermission(
+                argThat(new AnyStringIn(enforcedPermissions)), any());
+
+        registerPhoneAccountTestHelper(account, false);
+        verify(mAnomalyReporterAdapter).reportAnomaly(
+                TelecomServiceImpl.REGISTER_PHONE_ACCOUNT_ERROR_UUID,
+                TelecomServiceImpl.REGISTER_PHONE_ACCOUNT_ERROR_MSG);
     }
 
     @SmallTest
@@ -1443,8 +1466,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     public void testEndCallWithNoForegroundCall() throws Exception {
         Call call = mock(Call.class);
         when(call.getState()).thenReturn(CallState.ACTIVE);
-        when(mFakeCallsManager.getFirstCallWithState(any()))
-                .thenReturn(call);
+        when(mFakeCallsManager.getFirstCallWithState(any())).thenReturn(call);
         assertTrue(mTSIBinder.endCall(TEST_PACKAGE));
         verify(mFakeCallsManager).disconnectCall(eq(call));
     }
@@ -1485,14 +1507,16 @@ public class TelecomServiceImplTest extends TelecomTestCase {
     @SmallTest
     @Test
     public void testIsInCall() throws Exception {
-        when(mFakeCallsManager.hasOngoingCalls()).thenReturn(true);
+        when(mFakeCallsManager.hasOngoingCalls(any(UserHandle.class), anyBoolean()))
+                .thenReturn(true);
         assertTrue(mTSIBinder.isInCall(DEFAULT_DIALER_PACKAGE, null));
     }
 
     @SmallTest
     @Test
     public void testNotIsInCall() throws Exception {
-        when(mFakeCallsManager.hasOngoingCalls()).thenReturn(false);
+        when(mFakeCallsManager.hasOngoingCalls(any(UserHandle.class), anyBoolean()))
+                .thenReturn(false);
         assertFalse(mTSIBinder.isInCall(DEFAULT_DIALER_PACKAGE, null));
     }
 
@@ -1507,20 +1531,22 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         } catch (SecurityException e) {
             // desired result
         }
-        verify(mFakeCallsManager, never()).hasOngoingCalls();
+        verify(mFakeCallsManager, never()).hasOngoingCalls(any(UserHandle.class), anyBoolean());
     }
 
     @SmallTest
     @Test
     public void testIsInManagedCall() throws Exception {
-        when(mFakeCallsManager.hasOngoingManagedCalls()).thenReturn(true);
+        when(mFakeCallsManager.hasOngoingManagedCalls(any(UserHandle.class), anyBoolean()))
+                .thenReturn(true);
         assertTrue(mTSIBinder.isInManagedCall(DEFAULT_DIALER_PACKAGE, null));
     }
 
     @SmallTest
     @Test
     public void testNotIsInManagedCall() throws Exception {
-        when(mFakeCallsManager.hasOngoingManagedCalls()).thenReturn(false);
+        when(mFakeCallsManager.hasOngoingManagedCalls(any(UserHandle.class), anyBoolean()))
+                .thenReturn(false);
         assertFalse(mTSIBinder.isInManagedCall(DEFAULT_DIALER_PACKAGE, null));
     }
 
@@ -1535,7 +1561,7 @@ public class TelecomServiceImplTest extends TelecomTestCase {
         } catch (SecurityException e) {
             // desired result
         }
-        verify(mFakeCallsManager, never()).hasOngoingCalls();
+        verify(mFakeCallsManager, never()).hasOngoingCalls(any(UserHandle.class), anyBoolean());
     }
 
     /**
