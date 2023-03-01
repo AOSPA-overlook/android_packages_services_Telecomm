@@ -89,16 +89,22 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 @RunWith(JUnit4.class)
 public class PhoneAccountRegistrarTest extends TelecomTestCase {
 
     private static final int MAX_VERSION = Integer.MAX_VALUE;
+    private static final int INVALID_CHAR_LIMIT_COUNT =
+            PhoneAccountRegistrar.MAX_PHONE_ACCOUNT_FIELD_CHAR_LIMIT + 1;
+    private static final String INVALID_STR = "a".repeat(INVALID_CHAR_LIMIT_COUNT);
     private static final String FILE_NAME = "phone-account-registrar-test-1223.xml";
     private static final String TEST_LABEL = "right";
+    private static final String TEST_ID = "123";
     private final String PACKAGE_1 = "PACKAGE_1";
     private final String PACKAGE_2 = "PACKAGE_2";
     private final String COMPONENT_NAME = "com.android.server.telecom.tests.MockConnectionService";
+    private final UserHandle USER_HANDLE_10 = new UserHandle(10);
     private final TelecomSystem.SyncRoot mLock = new TelecomSystem.SyncRoot() { };
     private PhoneAccountRegistrar mRegistrar;
     @Mock private SubscriptionManager mSubscriptionManager;
@@ -163,7 +169,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         testBundle.putString("EXTRA_STR1", "Hello");
         testBundle.putString("EXTRA_STR2", "There");
 
-        PhoneAccount input = makeQuickAccountBuilder("id0", 0)
+        PhoneAccount input = makeQuickAccountBuilder("id0", 0, null)
                 .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
                 .addSupportedUriScheme(PhoneAccount.SCHEME_VOICEMAIL)
                 .setExtras(testBundle)
@@ -271,7 +277,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         // Put in something valid so the bundle exists.
         testBundle.putString("EXTRA_OK", "OK");
 
-        PhoneAccount input = makeQuickAccountBuilder("id0", 0)
+        PhoneAccount input = makeQuickAccountBuilder("id0", 0, null)
                 .addSupportedUriScheme(PhoneAccount.SCHEME_TEL)
                 .addSupportedUriScheme(PhoneAccount.SCHEME_VOICEMAIL)
                 .setExtras(testBundle)
@@ -309,24 +315,33 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         mComponentContextFixture.addConnectionService(makeQuickConnectionServiceComponentName(),
                 Mockito.mock(IConnectionService.class));
 
-        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++)
+        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CONNECTION_MANAGER
                         | PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .build());
-        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++)
+        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CONNECTION_MANAGER
                         | PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .build());
-        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++)
+        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CONNECTION_MANAGER
                         | PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .build());
-        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++)
+        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++, null)
+                .setCapabilities(PhoneAccount.CAPABILITY_CONNECTION_MANAGER)
+                .build());
+        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++, USER_HANDLE_10)
+                .setCapabilities(PhoneAccount.CAPABILITY_CONNECTION_MANAGER
+                        | PhoneAccount.CAPABILITY_CALL_PROVIDER)
+                .build());
+        registerAndEnableAccount(makeQuickAccountBuilder("id" + i, i++, USER_HANDLE_10)
                 .setCapabilities(PhoneAccount.CAPABILITY_CONNECTION_MANAGER)
                 .build());
 
-        assertEquals(4, mRegistrar.getAllPhoneAccountsOfCurrentUser().size());
-        assertEquals(3, mRegistrar.getCallCapablePhoneAccountsOfCurrentUser(null, false).size());
+        assertEquals(6, mRegistrar.
+                getAllPhoneAccounts(null, true).size());
+        assertEquals(4, mRegistrar.getCallCapablePhoneAccounts(null, false,
+                null, true).size());
         assertEquals(null, mRegistrar.getSimCallManagerOfCurrentUser());
         assertEquals(null, mRegistrar.getOutgoingPhoneAccountForSchemeOfCurrentUser(
                 PhoneAccount.SCHEME_TEL));
@@ -674,6 +689,75 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         assertEquals(TEST_LABEL, registeredAccount.getLabel());
     }
 
+    @MediumTest
+    @Test
+    public void testSecurityExceptionIsThrownWhenSelfManagedLacksPermissions() {
+        PhoneAccountHandle handle = makeQuickAccountHandle(
+                new ComponentName("self", "managed"), "selfie1");
+
+        PhoneAccount accountWithoutCapability = new PhoneAccount.Builder(handle, "label")
+                .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+                .build();
+
+        assertFalse(mRegistrar.hasTransactionalCallCapabilites(accountWithoutCapability));
+
+        try {
+            mRegistrar.registerPhoneAccount(accountWithoutCapability);
+            fail("should not be able to register account");
+        } catch (SecurityException securityException) {
+            // test pass
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    @MediumTest
+    @Test
+    public void testSelfManagedPhoneAccountWithTransactionalOperations() {
+        PhoneAccountHandle handle = makeQuickAccountHandle(
+                new ComponentName("self", "managed"), "selfie1");
+
+        PhoneAccount accountWithCapability = new PhoneAccount.Builder(handle, "label")
+                .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED |
+                        PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS)
+                .build();
+
+        assertTrue(mRegistrar.hasTransactionalCallCapabilites(accountWithCapability));
+
+        try {
+            mRegistrar.registerPhoneAccount(accountWithCapability);
+            PhoneAccount registeredAccount = mRegistrar.getPhoneAccountUnchecked(handle);
+            assertEquals(TEST_LABEL, registeredAccount.getLabel().toString());
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    @MediumTest
+    @Test
+    public void testRegisterPhoneAccountAmendsSelfManagedCapabilityInternally() {
+        // GIVEN
+        PhoneAccountHandle handle = makeQuickAccountHandle(
+                new ComponentName("self", "managed"), "selfie1");
+        PhoneAccount accountWithCapability = new PhoneAccount.Builder(handle, "label")
+                .setCapabilities(
+                        PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS)
+                .build();
+
+        assertTrue(mRegistrar.hasTransactionalCallCapabilites(accountWithCapability));
+
+        try {
+            // WHEN
+            mRegistrar.registerPhoneAccount(accountWithCapability);
+            PhoneAccount registeredAccount = mRegistrar.getPhoneAccountUnchecked(handle);
+            // THEN
+            assertEquals(PhoneAccount.CAPABILITY_SELF_MANAGED, (registeredAccount.getCapabilities()
+                    & PhoneAccount.CAPABILITY_SELF_MANAGED));
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
     /**
      * Tests to ensure that when registering a self-managed PhoneAccount, it cannot also be defined
      * as a call provider, connection manager, or sim subscription.
@@ -727,7 +811,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         registerAndEnableAccount(nonSimAccount);
         registerAndEnableAccount(simAccount);
 
-        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle(), false);
         assertTrue(accounts.get(0).getLabel().toString().equals("2"));
         assertTrue(accounts.get(1).getLabel().toString().equals("1"));
     }
@@ -770,7 +854,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         registerAndEnableAccount(account2);
         registerAndEnableAccount(account1);
 
-        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle(), false);
         assertTrue(accounts.get(0).getLabel().toString().equals("c"));
         assertTrue(accounts.get(1).getLabel().toString().equals("b"));
         assertTrue(accounts.get(2).getLabel().toString().equals("a"));
@@ -808,7 +892,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         registerAndEnableAccount(account2);
         registerAndEnableAccount(account3);
 
-        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle(), false);
         assertTrue(accounts.get(0).getLabel().toString().equals("a"));
         assertTrue(accounts.get(1).getLabel().toString().equals("b"));
         assertTrue(accounts.get(2).getLabel().toString().equals("c"));
@@ -886,7 +970,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         registerAndEnableAccount(account5);
         registerAndEnableAccount(account6);
 
-        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle());
+        List<PhoneAccount> accounts = mRegistrar.getAllPhoneAccounts(Process.myUserHandle(), false);
         // Sim accts ordered by sort order first
         assertTrue(accounts.get(0).getLabel().toString().equals("z"));
         assertTrue(accounts.get(1).getLabel().toString().equals("y"));
@@ -910,14 +994,14 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
     public void testGetByEnabledState() throws Exception {
         mComponentContextFixture.addConnectionService(makeQuickConnectionServiceComponentName(),
                 Mockito.mock(IConnectionService.class));
-        mRegistrar.registerPhoneAccount(makeQuickAccountBuilder("id1", 1)
+        mRegistrar.registerPhoneAccount(makeQuickAccountBuilder("id1", 1, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .build());
 
         assertEquals(0, mRegistrar.getCallCapablePhoneAccounts(PhoneAccount.SCHEME_TEL,
-                false /* includeDisabled */, Process.myUserHandle()).size());
+                false /* includeDisabled */, Process.myUserHandle(), false).size());
         assertEquals(1, mRegistrar.getCallCapablePhoneAccounts(PhoneAccount.SCHEME_TEL,
-                true /* includeDisabled */, Process.myUserHandle()).size());
+                true /* includeDisabled */, Process.myUserHandle(), false).size());
     }
 
     /**
@@ -930,21 +1014,21 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
     public void testGetByScheme() throws Exception {
         mComponentContextFixture.addConnectionService(makeQuickConnectionServiceComponentName(),
                 Mockito.mock(IConnectionService.class));
-        registerAndEnableAccount(makeQuickAccountBuilder("id1", 1)
+        registerAndEnableAccount(makeQuickAccountBuilder("id1", 1, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .setSupportedUriSchemes(Arrays.asList(PhoneAccount.SCHEME_SIP))
                 .build());
-        registerAndEnableAccount(makeQuickAccountBuilder("id2", 2)
+        registerAndEnableAccount(makeQuickAccountBuilder("id2", 2, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .setSupportedUriSchemes(Arrays.asList(PhoneAccount.SCHEME_TEL))
                 .build());
 
         assertEquals(1, mRegistrar.getCallCapablePhoneAccounts(PhoneAccount.SCHEME_SIP,
-                false /* includeDisabled */, Process.myUserHandle()).size());
+                false /* includeDisabled */, Process.myUserHandle(), false).size());
         assertEquals(1, mRegistrar.getCallCapablePhoneAccounts(PhoneAccount.SCHEME_TEL,
-                false /* includeDisabled */, Process.myUserHandle()).size());
+                false /* includeDisabled */, Process.myUserHandle(), false).size());
         assertEquals(2, mRegistrar.getCallCapablePhoneAccounts(null, false /* includeDisabled */,
-                Process.myUserHandle()).size());
+                Process.myUserHandle(), false).size());
     }
 
     /**
@@ -957,23 +1041,24 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
     public void testGetByCapability() throws Exception {
         mComponentContextFixture.addConnectionService(makeQuickConnectionServiceComponentName(),
                 Mockito.mock(IConnectionService.class));
-        registerAndEnableAccount(makeQuickAccountBuilder("id1", 1)
+        registerAndEnableAccount(makeQuickAccountBuilder("id1", 1, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER
                         | PhoneAccount.CAPABILITY_VIDEO_CALLING)
                 .setSupportedUriSchemes(Arrays.asList(PhoneAccount.SCHEME_SIP))
                 .build());
-        registerAndEnableAccount(makeQuickAccountBuilder("id2", 2)
+        registerAndEnableAccount(makeQuickAccountBuilder("id2", 2, null)
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .setSupportedUriSchemes(Arrays.asList(PhoneAccount.SCHEME_SIP))
                 .build());
 
         assertEquals(1, mRegistrar.getCallCapablePhoneAccounts(PhoneAccount.SCHEME_SIP,
-                false /* includeDisabled */, Process.myUserHandle()).size(),
+                false /* includeDisabled */, Process.myUserHandle(), false).size(),
                 PhoneAccount.CAPABILITY_VIDEO_CALLING);
         assertEquals(2, mRegistrar.getCallCapablePhoneAccounts(PhoneAccount.SCHEME_SIP,
-                false /* includeDisabled */, Process.myUserHandle()).size(), 0 /* none extra */);
+                false /* includeDisabled */, Process.myUserHandle(), false)
+                .size(), 0 /* none extra */);
         assertEquals(0, mRegistrar.getCallCapablePhoneAccounts(PhoneAccount.SCHEME_SIP,
-                false /* includeDisabled */, Process.myUserHandle()).size(),
+                false /* includeDisabled */, Process.myUserHandle(), false).size(),
                 PhoneAccount.CAPABILITY_RTT);
     }
 
@@ -1059,8 +1144,8 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         registerAndEnableAccount(pa1);
         registerAndEnableAccount(pa2);
 
-        assertEquals(1, mRegistrar.getAllPhoneAccounts(users.get(0)).size());
-        assertEquals(1, mRegistrar.getAllPhoneAccounts(users.get(1)).size());
+        assertEquals(1, mRegistrar.getAllPhoneAccounts(users.get(0), false).size());
+        assertEquals(1, mRegistrar.getAllPhoneAccounts(users.get(1), false).size());
 
 
         // WHEN
@@ -1254,6 +1339,253 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
                 defaultPhoneAccountHandle.phoneAccountHandle.getId());
     }
 
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccountHandle} with a { PhoneAccountHandle#packageName} that is over the
+     * character limit set
+     */
+    @Test
+    public void testInvalidPhoneAccountHandlePackageNameThrowsException() {
+        // GIVEN
+        String invalidPackageName = INVALID_STR;
+        PhoneAccountHandle handle = makeQuickAccountHandle(
+                new ComponentName(invalidPackageName, this.getClass().getName()), TEST_ID);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidPackageName,
+                    account.getAccountHandle().getComponentName().getPackageName());
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccountHandle} with a { PhoneAccountHandle#className} that is over the
+     * character limit set
+     */
+    @Test
+    public void testInvalidPhoneAccountHandleClassNameThrowsException() {
+        // GIVEN
+        String invalidClassName = INVALID_STR;
+        PhoneAccountHandle handle = makeQuickAccountHandle(
+                new ComponentName(this.getClass().getPackageName(), invalidClassName), TEST_ID);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidClassName,
+                    account.getAccountHandle().getComponentName().getClassName());
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccountHandle} with a { PhoneAccount#mId} that is over the character limit set
+     */
+    @Test
+    public void testInvalidPhoneAccountHandleIdThrowsException() {
+        // GIVEN
+        String invalidId = INVALID_STR;
+        PhoneAccountHandle handle = makeQuickAccountHandle(invalidId);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidId, account.getAccountHandle().getId());
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccount} with a { PhoneAccount#mLabel} that is over the character limit set
+     */
+    @Test
+    public void testInvalidLabelThrowsException() {
+        // GIVEN
+        String invalidLabel = INVALID_STR;
+        PhoneAccountHandle handle = makeQuickAccountHandle(TEST_ID);
+        PhoneAccount.Builder builder = new PhoneAccount.Builder(handle, invalidLabel)
+                .setCapabilities(PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS);
+
+        // WHEN
+        when(mAppLabelProxy.getAppLabel(anyString())).thenReturn(invalidLabel);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidLabel, account.getLabel());
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccount} with a {PhoneAccount#mShortDescription} that is over the character
+     * limit set
+     */
+    @Test
+    public void testInvalidShortDescriptionThrowsException() {
+        // GIVEN
+        String invalidShortDescription = INVALID_STR;
+        PhoneAccountHandle handle = makeQuickAccountHandle(TEST_ID);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle)
+                .setShortDescription(invalidShortDescription);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidShortDescription, account.getShortDescription());
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccount} with a {PhoneAccount#mGroupId} that is over the character limit set
+     */
+    @Test
+    public void testInvalidGroupIdThrowsException() {
+        // GIVEN
+        String invalidGroupId = INVALID_STR;
+        PhoneAccountHandle handle = makeQuickAccountHandle(TEST_ID);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle)
+                .setGroupId(invalidGroupId);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidGroupId, account.getGroupId());
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccount} with a {PhoneAccount#mExtras} that is over the character limit set
+     */
+    @Test
+    public void testInvalidExtraStringKeyThrowsException() {
+        // GIVEN
+        String invalidBundleKey = INVALID_STR;
+        String keyValue = "value";
+        Bundle extras = new Bundle();
+        extras.putString(invalidBundleKey, keyValue);
+        PhoneAccountHandle handle = makeQuickAccountHandle(TEST_ID);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle)
+                .setExtras(extras);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(keyValue, account.getExtras().getString(invalidBundleKey));
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccount} with a {PhoneAccount#mExtras} that is over the character limit set
+     */
+    @Test
+    public void testInvalidExtraStringValueThrowsException() {
+        // GIVEN
+        String extrasKey = "ExtrasStringKey";
+        String invalidBundleValue = INVALID_STR;
+        Bundle extras = new Bundle();
+        extras.putString(extrasKey, invalidBundleValue);
+        PhoneAccountHandle handle = makeQuickAccountHandle(TEST_ID);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle)
+                .setExtras(extras);
+
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidBundleValue, account.getExtras().getString(extrasKey));
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // pass test
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    /**
+     * Test that an {@link IllegalArgumentException} is thrown when a package registers a
+     * {@link PhoneAccount} with a {PhoneAccount#mExtras} that is over the (key,value) pair limit
+     */
+    @Test
+    public void testInvalidExtraElementsExceedsLimitAndThrowsException() {
+        // GIVEN
+        int invalidBundleExtrasLimit =
+                PhoneAccountRegistrar.MAX_PHONE_ACCOUNT_EXTAS_KEY_PAIR_LIMIT + 1;
+        Bundle extras = new Bundle();
+        for (int i = 0; i < invalidBundleExtrasLimit; i++) {
+            extras.putString(UUID.randomUUID().toString(), "value");
+        }
+        PhoneAccountHandle handle = makeQuickAccountHandle(TEST_ID);
+        PhoneAccount.Builder builder = makeBuilderWithBindCapabilities(handle)
+                .setExtras(extras);
+        // THEN
+        try {
+            PhoneAccount account = builder.build();
+            assertEquals(invalidBundleExtrasLimit, account.getExtras().size());
+            mRegistrar.registerPhoneAccount(account);
+            fail("failed to throw IllegalArgumentException");
+        } catch (IllegalArgumentException e) {
+            // Test Pass
+        } finally {
+            mRegistrar.unregisterPhoneAccount(handle);
+        }
+    }
+
+    private static PhoneAccount.Builder makeBuilderWithBindCapabilities(PhoneAccountHandle handle){
+        return new PhoneAccount.Builder(handle, TEST_LABEL)
+                .setCapabilities(PhoneAccount.CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS);
+    }
+
     private static ComponentName makeQuickConnectionServiceComponentName() {
         return new ComponentName(
                 "com.android.server.telecom.tests",
@@ -1268,9 +1600,17 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
         return new PhoneAccountHandle(name, id, Process.myUserHandle());
     }
 
-    private PhoneAccount.Builder makeQuickAccountBuilder(String id, int idx) {
+    private static PhoneAccountHandle makeQuickAccountHandleForUser(
+            String id, UserHandle userHandle) {
+        return new PhoneAccountHandle(makeQuickConnectionServiceComponentName(), id, userHandle);
+    }
+
+    private PhoneAccount.Builder makeQuickAccountBuilder(
+            String id, int idx, UserHandle userHandle) {
         return new PhoneAccount.Builder(
-                makeQuickAccountHandle(id),
+                userHandle == null
+                        ? makeQuickAccountHandle(id)
+                        : makeQuickAccountHandleForUser(id, userHandle),
                 "label" + idx);
     }
 
@@ -1292,7 +1632,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
     }
 
     private PhoneAccount makeQuickAccount(String id, int idx) {
-        return makeQuickAccountBuilder(id, idx)
+        return makeQuickAccountBuilder(id, idx, null)
                 .setAddress(Uri.parse("http://foo.com/" + idx))
                 .setSubscriptionAddress(Uri.parse("tel:555-000" + idx))
                 .setCapabilities(idx)
@@ -1309,7 +1649,7 @@ public class PhoneAccountRegistrarTest extends TelecomTestCase {
      */
     private PhoneAccount makeQuickSimAccount(int simId) {
         PhoneAccount simAccount =
-                makeQuickAccountBuilder("sim" + simId, simId)
+                makeQuickAccountBuilder("sim" + simId, simId, null)
                         .setCapabilities(
                                 PhoneAccount.CAPABILITY_CALL_PROVIDER
                                         | PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)

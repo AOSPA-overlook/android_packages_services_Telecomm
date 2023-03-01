@@ -23,11 +23,8 @@ import android.Manifest;
 import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.app.AppOpsManager;
-import android.app.compat.CompatChanges;
 import android.app.Notification;
 import android.app.NotificationManager;
-import android.compat.annotation.ChangeId;
-import android.compat.annotation.EnabledSince;
 import android.content.AttributionSource;
 import android.content.BroadcastReceiver;
 import android.content.ComponentName;
@@ -41,7 +38,6 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.ServiceInfo;
 import android.hardware.SensorPrivacyManager;
 import android.os.Binder;
-import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -52,6 +48,7 @@ import android.os.Trace;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.CallAudioState;
+import android.telecom.CallEndpoint;
 import android.telecom.ConnectionService;
 import android.telecom.InCallService;
 import android.telecom.Log;
@@ -285,6 +282,8 @@ public class InCallController extends CallsManagerListenerBase implements
 
         @Override
         public int connect(Call call) {
+            UserHandle userFromCall = getUserFromCall(call);
+
             if (mIsConnected) {
                 Log.addEvent(call, LogUtils.Events.INFO, "Already connected, ignoring request: "
                         + mInCallServiceInfo);
@@ -294,7 +293,7 @@ public class InCallController extends CallsManagerListenerBase implements
 
                     // Notify this new added call
                     sendCallToService(call, mInCallServiceInfo,
-                            mInCallServices.get(mInCallServiceInfo));
+                            mInCallServices.get(userFromCall).get(mInCallServiceInfo));
                 }
                 return CONNECTION_SUCCEEDED;
             }
@@ -320,12 +319,12 @@ public class InCallController extends CallsManagerListenerBase implements
             Log.i(this, "Attempting to bind to InCall %s, with %s", mInCallServiceInfo, intent);
             mIsConnected = true;
             mInCallServiceInfo.setBindingStartTime(mClockProxy.elapsedRealtime());
+            UserHandle userToBind = getUserFromCall(call);
             if (!mContext.bindServiceAsUser(intent, mServiceConnection,
                         Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE |
                         Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS |
-                        Context.BIND_ABOVE_CLIENT
-                        | Context.BIND_SCHEDULE_LIKE_TOP_APP,
-                        UserHandle.CURRENT)) {
+                        Context.BIND_ABOVE_CLIENT | Context.BIND_SCHEDULE_LIKE_TOP_APP,
+                        userToBind)) {
                 Log.w(this, "Failed to connect.");
                 mIsConnected = false;
             }
@@ -346,6 +345,7 @@ public class InCallController extends CallsManagerListenerBase implements
         @Override
         public void disconnect() {
             if (mIsConnected) {
+                UserHandle userFromCall = getUserFromCall(mCall);
                 mInCallServiceInfo.setDisconnectTime(mClockProxy.elapsedRealtime());
                 Log.i(InCallController.this, "ICSBC#disconnect: unbinding after %s ms;"
                                 + "%s. isCrashed: %s", mInCallServiceInfo.mDisconnectTime
@@ -358,7 +358,7 @@ public class InCallController extends CallsManagerListenerBase implements
                     // Non-UI InCallServices are allowed to return null from onBind if they don't
                     // want to handle calls at the moment, so don't report them to the user as
                     // crashed.
-                    sendCrashedInCallServiceNotification(packageName);
+                    sendCrashedInCallServiceNotification(packageName, userFromCall);
                 }
                 if (mCall != null) {
                     mCall.getAnalytics().addInCallService(
@@ -369,7 +369,7 @@ public class InCallController extends CallsManagerListenerBase implements
                     updateCallTracking(mCall, mInCallServiceInfo, false /* isAdd */);
                 }
 
-                InCallController.this.onDisconnected(mInCallServiceInfo);
+                InCallController.this.onDisconnected(mInCallServiceInfo, userFromCall);
             } else {
                 Log.i(InCallController.this, "ICSBC#disconnect: already disconnected; %s",
                         mInCallServiceInfo);
@@ -395,7 +395,8 @@ public class InCallController extends CallsManagerListenerBase implements
 
         protected void onConnected(IBinder service) {
             boolean shouldRemainConnected =
-                    InCallController.this.onConnected(mInCallServiceInfo, service);
+                    InCallController.this.onConnected(mInCallServiceInfo, service,
+                            getUserFromCall(mCall));
             if (!shouldRemainConnected) {
                 // Sometimes we can opt to disconnect for certain reasons, like if the
                 // InCallService rejected our initialization step, or the calls went away
@@ -407,7 +408,7 @@ public class InCallController extends CallsManagerListenerBase implements
 
         protected void onDisconnected() {
             boolean shouldReconnect = mIsConnected;
-            InCallController.this.onDisconnected(mInCallServiceInfo);
+            InCallController.this.onDisconnected(mInCallServiceInfo, getUserFromCall(mCall));
             disconnect();  // Unbind explicitly if we get disconnected.
             if (mListener != null) {
                 mListener.onDisconnect(InCallServiceBindingConnection.this, mCall);
@@ -477,9 +478,9 @@ public class InCallController extends CallsManagerListenerBase implements
                 // Could not connect to child, stop proxying.
                 mIsProxying = false;
             }
-
+            UserHandle userFromCall = getUserFromCall(call);
             mEmergencyCallHelper.maybeGrantTemporaryLocationPermission(call,
-                    mCallsManager.getCurrentUserHandle());
+                    userFromCall);
 
             if (call != null && call.isIncoming()
                     && mEmergencyCallHelper.getLastEmergencyCallTimeMillis() > 0) {
@@ -487,7 +488,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 Bundle extras = new Bundle();
                 extras.putLong(android.telecom.Call.EXTRA_LAST_EMERGENCY_CALLBACK_TIME_MILLIS,
                         mEmergencyCallHelper.getLastEmergencyCallTimeMillis());
-                call.putExtras(Call.SOURCE_CONNECTION_SERVICE, extras);
+                call.putConnectionServiceExtras(extras);
             }
 
             // If we are here, we didn't or could not connect to child. So lets connect ourselves.
@@ -627,13 +628,13 @@ public class InCallController extends CallsManagerListenerBase implements
          *
          * @param packageName The package name of the car mode app.
          */
-        public synchronized void changeCarModeApp(String packageName) {
+        public synchronized void changeCarModeApp(String packageName, UserHandle userHandle) {
             Log.i(this, "changeCarModeApp: isCarModeNow=" + mIsCarMode);
 
             InCallServiceInfo currentConnectionInfo = mCurrentConnection == null ? null
                     : mCurrentConnection.getInfo();
             InCallServiceInfo carModeConnectionInfo =
-                    getInCallServiceComponent(packageName,
+                    getInCallServiceComponent(userHandle, packageName,
                             IN_CALL_SERVICE_TYPE_CAR_MODE_UI, true /* ignoreDisabed */);
 
             if (!Objects.equals(currentConnectionInfo, carModeConnectionInfo)
@@ -802,7 +803,7 @@ public class InCallController extends CallsManagerListenerBase implements
 
         @Override
         public void onConnectionPropertiesChanged(Call call, boolean didRttChange) {
-            updateCall(call, false /* includeVideoProvider */, didRttChange);
+            updateCall(call, false /* includeVideoProvider */, didRttChange, null);
         }
 
         @Override
@@ -812,7 +813,7 @@ public class InCallController extends CallsManagerListenerBase implements
 
         @Override
         public void onVideoCallProviderChanged(Call call) {
-            updateCall(call, true /* videoProviderChanged */, false);
+            updateCall(call, true /* videoProviderChanged */, false, null);
         }
 
         @Override
@@ -829,21 +830,26 @@ public class InCallController extends CallsManagerListenerBase implements
          * Listens for changes to extras reported by a Telecom {@link Call}.
          *
          * Extras changes can originate from a {@link ConnectionService} or an {@link InCallService}
-         * so we will only trigger an update of the call information if the source of the extras
-         * change was a {@link ConnectionService}.
+         * so we will only trigger an update of the call information if the source of the
+         * extras change was a {@link ConnectionService}.
          *
-         * @param call The call.
-         * @param source The source of the extras change ({@link Call#SOURCE_CONNECTION_SERVICE} or
+         * @param call   The call.
+         * @param source The source of the extras change
+         *               ({@link Call#SOURCE_CONNECTION_SERVICE} or
          *               {@link Call#SOURCE_INCALL_SERVICE}).
          * @param extras The extras.
          */
         @Override
-        public void onExtrasChanged(Call call, int source, Bundle extras) {
-            // Do not inform InCallServices of changes which originated there.
-            if (source == Call.SOURCE_INCALL_SERVICE) {
-                return;
+        public void onExtrasChanged(Call call, int source, Bundle extras,
+                String requestingPackageName) {
+            if (source == Call.SOURCE_CONNECTION_SERVICE) {
+                updateCall(call);
+            } else if (source == Call.SOURCE_INCALL_SERVICE && requestingPackageName != null) {
+                // If the change originated from another InCallService, we'll propagate the change
+                // to all other InCallServices running, EXCEPT the one who made the original change.
+                updateCall(call, false /* videoProviderChanged */, false /* rttInfoChanged */,
+                        requestingPackageName);
             }
-            updateCall(call);
         }
 
         /**
@@ -914,7 +920,7 @@ public class InCallController extends CallsManagerListenerBase implements
         @Override
         public void onRttInitiationFailure(Call call, int reason) {
             notifyRttInitiationFailure(call, reason);
-            updateCall(call, false, true);
+            updateCall(call, false, true, null);
         }
 
         @Override
@@ -937,6 +943,8 @@ public class InCallController extends CallsManagerListenerBase implements
                 if (Intent.ACTION_PACKAGE_CHANGED.equals(intent.getAction())) {
                     synchronized (mLock) {
                         String changedPackage = intent.getData().getSchemeSpecificPart();
+                        int uid = intent.getIntExtra(Intent.EXTRA_UID, 0);
+                        UserHandle userHandle = UserHandle.getUserHandleForUid(uid);
                         List<InCallServiceBindingConnection> componentsToBind =
                                 Arrays.stream(intent.getStringArrayExtra(
                                         Intent.EXTRA_CHANGED_COMPONENT_NAME_LIST))
@@ -945,13 +953,14 @@ public class InCallController extends CallsManagerListenerBase implements
                                                         className))
                                         .filter(mKnownNonUiInCallServices::contains)
                                         .flatMap(componentName -> getInCallServiceComponents(
-                                                componentName,
+                                                userHandle, componentName,
                                                 IN_CALL_SERVICE_TYPE_NON_UI).stream())
                                         .map(InCallServiceBindingConnection::new)
                                         .collect(Collectors.toList());
 
-                        if (mNonUIInCallServiceConnections != null) {
-                            mNonUIInCallServiceConnections.addConnections(componentsToBind);
+                        if (mNonUIInCallServiceConnections.containsKey(userHandle)) {
+                            mNonUIInCallServiceConnections.get(userHandle).
+                                    addConnections(componentsToBind);
                         }
 
                         // If the current car mode app become enabled from disabled, update
@@ -1008,7 +1017,8 @@ public class InCallController extends CallsManagerListenerBase implements
             CallState.DISCONNECTING };
 
     /** The in-call app implementations, see {@link IInCallService}. */
-    private final Map<InCallServiceInfo, IInCallService> mInCallServices = new ArrayMap<>();
+    private final Map<UserHandle, Map<InCallServiceInfo, IInCallService>>
+            mInCallServices = new ArrayMap<>();
 
     private final CallIdMapper mCallIdMapper = new CallIdMapper(Call::getId);
 
@@ -1022,8 +1032,10 @@ public class InCallController extends CallsManagerListenerBase implements
     private final DefaultDialerCache mDefaultDialerCache;
     private final EmergencyCallHelper mEmergencyCallHelper;
     private final Handler mHandler = new Handler(Looper.getMainLooper());
-    private CarSwappingInCallServiceConnection mInCallServiceConnection;
-    private NonUIInCallServiceConnectionCollection mNonUIInCallServiceConnections;
+    private final Map<UserHandle, CarSwappingInCallServiceConnection>
+            mInCallServiceConnections = new ArrayMap<>();
+    private final Map<UserHandle, NonUIInCallServiceConnectionCollection>
+            mNonUIInCallServiceConnections = new ArrayMap<>();
     private final ClockProxy mClockProxy;
     private final IBinder mToken = new Binder();
 
@@ -1156,59 +1168,70 @@ public class InCallController extends CallsManagerListenerBase implements
 
     @Override
     public void onCallAdded(Call call) {
-        if (!isBoundAndConnectedToServices()) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (!isBoundAndConnectedToServices(userFromCall)) {
             Log.i(this, "onCallAdded: %s; not bound or connected.", call);
             // We are not bound, or we're not connected.
             bindToServices(call);
         } else {
+            InCallServiceConnection inCallServiceConnection =
+                    mInCallServiceConnections.get(userFromCall);
+
             // We are bound, and we are connected.
-            adjustServiceBindingsForEmergency();
+            adjustServiceBindingsForEmergency(userFromCall);
 
             // This is in case an emergency call is added while there is an existing call.
             mEmergencyCallHelper.maybeGrantTemporaryLocationPermission(call,
-                    mCallsManager.getCurrentUserHandle());
+                    userFromCall);
 
             Log.i(this, "onCallAdded: %s", call);
             // Track the call if we don't already know about it.
             addCall(call);
 
-            Log.i(this, "mInCallServiceConnection isConnected=%b",
-                    mInCallServiceConnection.isConnected());
+            if (inCallServiceConnection != null) {
+                Log.i(this, "mInCallServiceConnection isConnected=%b",
+                        inCallServiceConnection.isConnected());
+            }
 
             List<ComponentName> componentsUpdated = new ArrayList<>();
-            for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.entrySet()) {
-                InCallServiceInfo info = entry.getKey();
+            if (mInCallServices.containsKey(userFromCall)) {
+                for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.
+                        get(userFromCall).entrySet()) {
+                    InCallServiceInfo info = entry.getKey();
 
-                if (call.isExternalCall() && !info.isExternalCallsSupported()) {
-                    continue;
+                    if (call.isExternalCall() && !info.isExternalCallsSupported()) {
+                        continue;
+                    }
+
+                    if (call.isSelfManaged() && (!call.visibleToInCallService()
+                            || !info.isSelfManagedCallsSupported())) {
+                        continue;
+                    }
+
+                    // Only send the RTT call if it's a UI in-call service
+                    boolean includeRttCall = false;
+                    if (inCallServiceConnection != null) {
+                        includeRttCall = info.equals(inCallServiceConnection.getInfo());
+                    }
+
+                    componentsUpdated.add(info.getComponentName());
+                    IInCallService inCallService = entry.getValue();
+
+                    ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(call,
+                            true /* includeVideoProvider */,
+                            mCallsManager.getPhoneAccountRegistrar(),
+                            info.isExternalCallsSupported(), includeRttCall,
+                            info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
+                                    info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
+                    try {
+                        inCallService.addCall(
+                                sanitizeParcelableCallForService(info, parcelableCall));
+                        updateCallTracking(call, info, true /* isAdd */);
+                    } catch (RemoteException ignored) {
+                    }
                 }
-
-                if (call.isSelfManaged() && (!call.visibleToInCallService()
-                        || !info.isSelfManagedCallsSupported())) {
-                    continue;
-                }
-
-                // Only send the RTT call if it's a UI in-call service
-                boolean includeRttCall = false;
-                if (mInCallServiceConnection != null) {
-                    includeRttCall = info.equals(mInCallServiceConnection.getInfo());
-                }
-
-                componentsUpdated.add(info.getComponentName());
-                IInCallService inCallService = entry.getValue();
-
-                ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(call,
-                        true /* includeVideoProvider */, mCallsManager.getPhoneAccountRegistrar(),
-                        info.isExternalCallsSupported(), includeRttCall,
-                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
-                                info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
-                try {
-                    inCallService.addCall(sanitizeParcelableCallForService(info, parcelableCall));
-                    updateCallTracking(call, info, true /* isAdd */);
-                } catch (RemoteException ignored) {
-                }
+                Log.i(this, "Call added to components: %s", componentsUpdated);
             }
-            Log.i(this, "Call added to components: %s", componentsUpdated);
         }
     }
 
@@ -1224,7 +1247,7 @@ public class InCallController extends CallsManagerListenerBase implements
                 public void loggedRun() {
                     // Check again to make sure there are no active calls.
                     if (mCallsManager.getCalls().isEmpty()) {
-                        unbindFromServices();
+                        unbindFromServices(getUserFromCall(call));
 
                         mEmergencyCallHelper.maybeRevokeTemporaryLocationPermission();
                     }
@@ -1247,10 +1270,12 @@ public class InCallController extends CallsManagerListenerBase implements
         Log.i(this, "onExternalCallChanged: %s -> %b", call, isExternalCall);
 
         List<ComponentName> componentsUpdated = new ArrayList<>();
-        if (!isExternalCall) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (!isExternalCall && mInCallServices.containsKey(userFromCall)) {
             // The call was external but it is no longer external.  We must now add it to any
             // InCallServices which do not support external calls.
-            for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.entrySet()) {
+            for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.
+                    get(userFromCall).entrySet()) {
                 InCallServiceInfo info = entry.getKey();
 
                 if (info.isExternalCallsSupported()) {
@@ -1268,7 +1293,8 @@ public class InCallController extends CallsManagerListenerBase implements
                 IInCallService inCallService = entry.getValue();
 
                 // Only send the RTT call if it's a UI in-call service
-                boolean includeRttCall = info.equals(mInCallServiceConnection.getInfo());
+                boolean includeRttCall = info.equals(mInCallServiceConnections.
+                        get(userFromCall).getInfo());
 
                 ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(call,
                         true /* includeVideoProvider */, mCallsManager.getPhoneAccountRegistrar(),
@@ -1287,35 +1313,38 @@ public class InCallController extends CallsManagerListenerBase implements
             // InCallServices which do not support external calls.
             // Remove the call by sending a call update indicating the call was disconnected.
             Log.i(this, "Removing external call %s", call);
-            for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.entrySet()) {
-                InCallServiceInfo info = entry.getKey();
-                if (info.isExternalCallsSupported()) {
-                    // For InCallServices which support external calls, we do not need to remove
-                    // the call.
-                    continue;
+            if (mInCallServices.containsKey(userFromCall)) {
+                for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.
+                        get(userFromCall).entrySet()) {
+                    InCallServiceInfo info = entry.getKey();
+                    if (info.isExternalCallsSupported()) {
+                        // For InCallServices which support external calls, we do not need to remove
+                        // the call.
+                        continue;
+                    }
+
+                    componentsUpdated.add(info.getComponentName());
+                    IInCallService inCallService = entry.getValue();
+
+                    ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
+                            call,
+                            false /* includeVideoProvider */,
+                            mCallsManager.getPhoneAccountRegistrar(),
+                            false /* supportsExternalCalls */,
+                            android.telecom.Call.STATE_DISCONNECTED /* overrideState */,
+                            false /* includeRttCall */,
+                            info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI
+                                    || info.getType() == IN_CALL_SERVICE_TYPE_NON_UI
+                    );
+
+                    try {
+                        inCallService.updateCall(
+                                sanitizeParcelableCallForService(info, parcelableCall));
+                    } catch (RemoteException ignored) {
+                    }
                 }
-
-                componentsUpdated.add(info.getComponentName());
-                IInCallService inCallService = entry.getValue();
-
-                ParcelableCall parcelableCall = ParcelableCallUtils.toParcelableCall(
-                        call,
-                        false /* includeVideoProvider */,
-                        mCallsManager.getPhoneAccountRegistrar(),
-                        false /* supportsExternalCalls */,
-                        android.telecom.Call.STATE_DISCONNECTED /* overrideState */,
-                        false /* includeRttCall */,
-                        info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI
-                                || info.getType() == IN_CALL_SERVICE_TYPE_NON_UI
-                );
-
-                try {
-                    inCallService.updateCall(
-                            sanitizeParcelableCallForService(info, parcelableCall));
-                } catch (RemoteException ignored) {
-                }
+                Log.i(this, "External call removed from components: %s", componentsUpdated);
             }
-            Log.i(this, "External call removed from components: %s", componentsUpdated);
         }
         maybeTrackMicrophoneUse(isMuted());
     }
@@ -1341,12 +1370,63 @@ public class InCallController extends CallsManagerListenerBase implements
             Log.i(this, "Calling onAudioStateChanged, audioState: %s -> %s", oldCallAudioState,
                     newCallAudioState);
             maybeTrackMicrophoneUse(newCallAudioState.isMuted());
-            for (IInCallService inCallService : mInCallServices.values()) {
-                try {
-                    inCallService.onCallAudioStateChanged(newCallAudioState);
-                } catch (RemoteException ignored) {
+            mInCallServices.values().forEach(inCallServices -> {
+                for (IInCallService inCallService : inCallServices.values()) {
+                    try {
+                        inCallService.onCallAudioStateChanged(newCallAudioState);
+                    } catch (RemoteException ignored) {
+                    }
                 }
-            }
+            });
+        }
+    }
+
+    @Override
+    public void onCallEndpointChanged(CallEndpoint callEndpoint) {
+        if (!mInCallServices.isEmpty()) {
+            Log.i(this, "Calling onCallEndpointChanged");
+            mInCallServices.values().forEach(inCallServices -> {
+                for (IInCallService inCallService : inCallServices.values()) {
+                    try {
+                        inCallService.onCallEndpointChanged(callEndpoint);
+                    } catch (RemoteException ignored) {
+                        Log.d(this, "Remote exception calling onCallEndpointChanged");
+                    }
+                }
+            });
+        }
+    }
+
+    @Override
+    public void onAvailableCallEndpointsChanged(Set<CallEndpoint> availableCallEndpoints) {
+        if (!mInCallServices.isEmpty()) {
+            Log.i(this, "Calling onAvailableCallEndpointsChanged");
+            List<CallEndpoint> availableEndpoints = new ArrayList<>(availableCallEndpoints);
+            mInCallServices.values().forEach(inCallServices -> {
+                for (IInCallService inCallService : inCallServices.values()) {
+                    try {
+                        inCallService.onAvailableCallEndpointsChanged(availableEndpoints);
+                    } catch (RemoteException ignored) {
+                        Log.d(this, "Remote exception calling onAvailableCallEndpointsChanged");
+                    }
+                }
+            });
+        }
+    }
+
+    @Override
+    public void onMuteStateChanged(boolean isMuted) {
+        if (!mInCallServices.isEmpty()) {
+            Log.i(this, "Calling onMuteStateChanged");
+            mInCallServices.values().forEach(inCallServices -> {
+                for (IInCallService inCallService : inCallServices.values()) {
+                    try {
+                        inCallService.onMuteStateChanged(isMuted);
+                    } catch (RemoteException ignored) {
+                        Log.d(this, "Remote exception calling onMuteStateChanged");
+                    }
+                }
+            });
         }
     }
 
@@ -1354,19 +1434,22 @@ public class InCallController extends CallsManagerListenerBase implements
     public void onCanAddCallChanged(boolean canAddCall) {
         if (!mInCallServices.isEmpty()) {
             Log.i(this, "onCanAddCallChanged : %b", canAddCall);
-            for (IInCallService inCallService : mInCallServices.values()) {
-                try {
-                    inCallService.onCanAddCallChanged(canAddCall);
-                } catch (RemoteException ignored) {
+            mInCallServices.values().forEach(inCallServices -> {
+                for (IInCallService inCallService : inCallServices.values()) {
+                    try {
+                        inCallService.onCanAddCallChanged(canAddCall);
+                    } catch (RemoteException ignored) {
+                    }
                 }
-            }
+            });
         }
     }
 
     void onPostDialWait(Call call, String remaining) {
-        if (!mInCallServices.isEmpty()) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (mInCallServices.containsKey(userFromCall)) {
             Log.i(this, "Calling onPostDialWait, remaining = %s", remaining);
-            for (IInCallService inCallService : mInCallServices.values()) {
+            for (IInCallService inCallService : mInCallServices.get(userFromCall).values()) {
                 try {
                     inCallService.setPostDialWait(mCallIdMapper.getCallId(call), remaining);
                 } catch (RemoteException ignored) {
@@ -1440,9 +1523,10 @@ public class InCallController extends CallsManagerListenerBase implements
         }
     }
 
-    void bringToForeground(boolean showDialpad) {
-        if (!mInCallServices.isEmpty()) {
-            for (IInCallService inCallService : mInCallServices.values()) {
+    @VisibleForTesting
+    public void bringToForeground(boolean showDialpad, UserHandle callingUser) {
+        if (mInCallServices.containsKey(callingUser)) {
+            for (IInCallService inCallService : mInCallServices.get(callingUser).values()) {
                 try {
                     inCallService.bringToForeground(showDialpad);
                 } catch (RemoteException ignored) {
@@ -1453,20 +1537,28 @@ public class InCallController extends CallsManagerListenerBase implements
         }
     }
 
-    void silenceRinger() {
-        if (!mInCallServices.isEmpty()) {
-            for (IInCallService inCallService : mInCallServices.values()) {
-                try {
-                    inCallService.silenceRinger();
-                } catch (RemoteException ignored) {
+    @VisibleForTesting
+    public Map<UserHandle, Map<InCallServiceInfo, IInCallService>> getInCallServices() {
+        return mInCallServices;
+    }
+
+    void silenceRinger(Set<UserHandle> userHandles) {
+        userHandles.forEach(userHandle -> {
+            if (mInCallServices.containsKey(userHandle)) {
+                for (IInCallService inCallService : mInCallServices.get(userHandle).values()) {
+                    try {
+                        inCallService.silenceRinger();
+                    } catch (RemoteException ignored) {
+                    }
                 }
             }
-        }
+        });
     }
 
     private void notifyConnectionEvent(Call call, String event, Bundle extras) {
-        if (!mInCallServices.isEmpty()) {
-            for (IInCallService inCallService : mInCallServices.values()) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (mInCallServices.containsKey(userFromCall)) {
+            for (IInCallService inCallService : mInCallServices.get(userFromCall).values()) {
                 try {
                     Log.i(this, "notifyConnectionEvent {Call: %s, Event: %s, Extras:[%s]}",
                             (call != null ? call.toString() : "null"),
@@ -1480,9 +1572,11 @@ public class InCallController extends CallsManagerListenerBase implements
     }
 
     private void notifyRttInitiationFailure(Call call, int reason) {
-        if (!mInCallServices.isEmpty()) {
-            mInCallServices.entrySet().stream()
-                    .filter((entry) -> entry.getKey().equals(mInCallServiceConnection.getInfo()))
+        UserHandle userFromCall = getUserFromCall(call);
+        if (mInCallServices.containsKey(userFromCall)) {
+            mInCallServices.get(userFromCall).entrySet().stream()
+                    .filter((entry) -> entry.getKey().equals(mInCallServiceConnections.
+                            get(userFromCall).getInfo()))
                     .forEach((entry) -> {
                         try {
                             Log.i(this, "notifyRttFailure, call %s, incall %s",
@@ -1496,9 +1590,11 @@ public class InCallController extends CallsManagerListenerBase implements
     }
 
     private void notifyRemoteRttRequest(Call call, int requestId) {
-        if (!mInCallServices.isEmpty()) {
-            mInCallServices.entrySet().stream()
-                    .filter((entry) -> entry.getKey().equals(mInCallServiceConnection.getInfo()))
+        UserHandle userFromCall = getUserFromCall(call);
+        if (mInCallServices.containsKey(userFromCall)) {
+            mInCallServices.get(userFromCall).entrySet().stream()
+                    .filter((entry) -> entry.getKey().equals(mInCallServiceConnections.
+                            get(userFromCall).getInfo()))
                     .forEach((entry) -> {
                         try {
                             Log.i(this, "notifyRemoteRttRequest, call %s, incall %s",
@@ -1512,8 +1608,9 @@ public class InCallController extends CallsManagerListenerBase implements
     }
 
     private void notifyHandoverFailed(Call call, int error) {
-        if (!mInCallServices.isEmpty()) {
-            for (IInCallService inCallService : mInCallServices.values()) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (mInCallServices.containsKey(userFromCall)) {
+            for (IInCallService inCallService : mInCallServices.get(userFromCall).values()) {
                 try {
                     inCallService.onHandoverFailed(mCallIdMapper.getCallId(call), error);
                 } catch (RemoteException ignored) {
@@ -1523,8 +1620,9 @@ public class InCallController extends CallsManagerListenerBase implements
     }
 
     private void notifyHandoverComplete(Call call) {
-        if (!mInCallServices.isEmpty()) {
-            for (IInCallService inCallService : mInCallServices.values()) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (mInCallServices.containsKey(userFromCall)) {
+            for (IInCallService inCallService : mInCallServices.get(userFromCall).values()) {
                 try {
                     inCallService.onHandoverComplete(mCallIdMapper.getCallId(call));
                 } catch (RemoteException ignored) {
@@ -1536,22 +1634,22 @@ public class InCallController extends CallsManagerListenerBase implements
     /**
      * Unbinds an existing bound connection to the in-call app.
      */
-    public void unbindFromServices() {
+    public void unbindFromServices(UserHandle userHandle) {
         try {
             mContext.unregisterReceiver(mPackageChangedReceiver);
         } catch (IllegalArgumentException e) {
             // Ignore this -- we may or may not have registered it, but when we bind, we want to
             // unregister no matter what.
         }
-        if (mInCallServiceConnection != null) {
-            mInCallServiceConnection.disconnect();
-            mInCallServiceConnection = null;
+        if (mInCallServiceConnections.containsKey(userHandle)) {
+            mInCallServiceConnections.get(userHandle).disconnect();
+            mInCallServiceConnections.remove(userHandle);
         }
-        if (mNonUIInCallServiceConnections != null) {
-            mNonUIInCallServiceConnections.disconnect();
-            mNonUIInCallServiceConnections = null;
+        if (mNonUIInCallServiceConnections.containsKey(userHandle)) {
+            mNonUIInCallServiceConnections.get(userHandle).disconnect();
+            mNonUIInCallServiceConnections.remove(userHandle);
         }
-        mInCallServices.clear();
+        mInCallServices.remove(userHandle);
     }
 
     /**
@@ -1563,9 +1661,10 @@ public class InCallController extends CallsManagerListenerBase implements
      */
     @VisibleForTesting
     public void bindToServices(Call call) {
-        if (mInCallServiceConnection == null) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (!mInCallServiceConnections.containsKey(userFromCall)) {
             InCallServiceConnection dialerInCall = null;
-            InCallServiceInfo defaultDialerComponentInfo = getDefaultDialerComponent();
+            InCallServiceInfo defaultDialerComponentInfo = getDefaultDialerComponent(userFromCall);
             Log.i(this, "defaultDialer: " + defaultDialerComponentInfo);
             if (defaultDialerComponentInfo != null &&
                     !defaultDialerComponentInfo.getComponentName().equals(
@@ -1574,28 +1673,30 @@ public class InCallController extends CallsManagerListenerBase implements
             }
             Log.i(this, "defaultDialer: " + dialerInCall);
 
-            InCallServiceInfo systemInCallInfo = getInCallServiceComponent(
+            InCallServiceInfo systemInCallInfo = getInCallServiceComponent(userFromCall,
                     mDefaultDialerCache.getSystemDialerComponent(), IN_CALL_SERVICE_TYPE_SYSTEM_UI);
             EmergencyInCallServiceConnection systemInCall =
                     new EmergencyInCallServiceConnection(systemInCallInfo, dialerInCall);
             systemInCall.setHasEmergency(mCallsManager.isInEmergencyCall());
 
             InCallServiceConnection carModeInCall = null;
-            InCallServiceInfo carModeComponentInfo = getCurrentCarModeComponent();
+            InCallServiceInfo carModeComponentInfo = getCurrentCarModeComponent(userFromCall);
             if (carModeComponentInfo != null &&
                     !carModeComponentInfo.getComponentName().equals(
                             mDefaultDialerCache.getSystemDialerComponent())) {
                 carModeInCall = new InCallServiceBindingConnection(carModeComponentInfo);
             }
 
-            mInCallServiceConnection =
-                    new CarSwappingInCallServiceConnection(systemInCall, carModeInCall);
+            mInCallServiceConnections.put(userFromCall,
+                    new CarSwappingInCallServiceConnection(systemInCall, carModeInCall));
         }
 
-        mInCallServiceConnection.chooseInitialInCallService(shouldUseCarModeUI());
+        CarSwappingInCallServiceConnection inCallServiceConnection =
+                mInCallServiceConnections.get(userFromCall);
+        inCallServiceConnection.chooseInitialInCallService(shouldUseCarModeUI());
 
         // Actually try binding to the UI InCallService.
-        if (mInCallServiceConnection.connect(call) ==
+        if (inCallServiceConnection.connect(call) ==
                 InCallServiceConnection.CONNECTION_SUCCEEDED || call.isSelfManaged()) {
             // Only connect to the non-ui InCallServices if we actually connected to the main UI
             // one, or if the call is self-managed (in which case we'd still want to keep Wear, BT,
@@ -1614,9 +1715,10 @@ public class InCallController extends CallsManagerListenerBase implements
         mContext.registerReceiver(mPackageChangedReceiver, packageChangedFilter);
     }
 
-    private void updateNonUiInCallServices() {
+    private void updateNonUiInCallServices(Call call) {
+        UserHandle userFromCall = getUserFromCall(call);
         List<InCallServiceInfo> nonUIInCallComponents =
-                getInCallServiceComponents(IN_CALL_SERVICE_TYPE_NON_UI);
+                getInCallServiceComponents(userFromCall, IN_CALL_SERVICE_TYPE_NON_UI);
         List<InCallServiceBindingConnection> nonUIInCalls = new LinkedList<>();
         for (InCallServiceInfo serviceInfo : nonUIInCallComponents) {
             nonUIInCalls.add(new InCallServiceBindingConnection(serviceInfo));
@@ -1625,27 +1727,28 @@ public class InCallController extends CallsManagerListenerBase implements
                 .getRoleManagerAdapter().getCallCompanionApps();
         if (callCompanionApps != null && !callCompanionApps.isEmpty()) {
             for (String pkg : callCompanionApps) {
-                InCallServiceInfo info = getInCallServiceComponent(pkg,
+                InCallServiceInfo info = getInCallServiceComponent(userFromCall, pkg,
                         IN_CALL_SERVICE_TYPE_COMPANION, true /* ignoreDisabled */);
                 if (info != null) {
                     nonUIInCalls.add(new InCallServiceBindingConnection(info));
                 }
             }
         }
-        mNonUIInCallServiceConnections = new NonUIInCallServiceConnectionCollection(
-                nonUIInCalls);
+        mNonUIInCallServiceConnections.put(userFromCall, new NonUIInCallServiceConnectionCollection(
+                nonUIInCalls));
     }
 
     private void connectToNonUiInCallServices(Call call) {
-        if (mNonUIInCallServiceConnections == null) {
-            updateNonUiInCallServices();
+        UserHandle userFromCall = getUserFromCall(call);
+        if (!mNonUIInCallServiceConnections.containsKey(userFromCall)) {
+            updateNonUiInCallServices(call);
         }
-        mNonUIInCallServiceConnections.connect(call);
+        mNonUIInCallServiceConnections.get(userFromCall).connect(call);
     }
 
-    private @Nullable InCallServiceInfo getDefaultDialerComponent() {
+    private @Nullable InCallServiceInfo getDefaultDialerComponent(UserHandle userHandle) {
         String defaultPhoneAppName = mDefaultDialerCache.getDefaultDialerApplication(
-                mCallsManager.getCurrentUserHandle().getIdentifier());
+                userHandle.getIdentifier());
         String systemPhoneAppName = mDefaultDialerCache.getSystemDialerApplication();
 
         Log.d(this, "getDefaultDialerComponent: defaultPhoneAppName=[%s]", defaultPhoneAppName);
@@ -1655,10 +1758,10 @@ public class InCallController extends CallsManagerListenerBase implements
         InCallServiceInfo defaultPhoneAppComponent =
                 (systemPhoneAppName != null && systemPhoneAppName.equals(defaultPhoneAppName)) ?
                         /* The defaultPhoneApp is also the systemPhoneApp. Get systemPhoneApp info*/
-                        getInCallServiceComponent(defaultPhoneAppName,
+                        getInCallServiceComponent(userHandle, defaultPhoneAppName,
                                 IN_CALL_SERVICE_TYPE_SYSTEM_UI, true /* ignoreDisabled */)
                         /* The defaultPhoneApp is NOT the systemPhoneApp. Get defaultPhoneApp info*/
-                        : getInCallServiceComponent(defaultPhoneAppName,
+                        : getInCallServiceComponent(userHandle, defaultPhoneAppName,
                                 IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI, true /* ignoreDisabled */);
 
         Log.d(this, "getDefaultDialerComponent: defaultPhoneAppComponent=[%s]",
@@ -1670,13 +1773,16 @@ public class InCallController extends CallsManagerListenerBase implements
         return defaultPhoneAppComponent;
     }
 
-    private InCallServiceInfo getCurrentCarModeComponent() {
-        return getInCallServiceComponent(mCarModeTracker.getCurrentCarModePackage(),
+    private InCallServiceInfo getCurrentCarModeComponent(UserHandle userHandle) {
+        return getInCallServiceComponent(userHandle,
+                mCarModeTracker.getCurrentCarModePackage(),
                 IN_CALL_SERVICE_TYPE_CAR_MODE_UI, true /* ignoreDisabled */);
     }
 
-    private InCallServiceInfo getInCallServiceComponent(ComponentName componentName, int type) {
-        List<InCallServiceInfo> list = getInCallServiceComponents(componentName, type);
+    private InCallServiceInfo getInCallServiceComponent(UserHandle userHandle,
+            ComponentName componentName, int type) {
+        List<InCallServiceInfo> list = getInCallServiceComponents(userHandle,
+                componentName, type);
         if (list != null && !list.isEmpty()) {
             return list.get(0);
         } else {
@@ -1687,38 +1793,41 @@ public class InCallController extends CallsManagerListenerBase implements
         }
     }
 
-    private InCallServiceInfo getInCallServiceComponent(String packageName, int type,
-            boolean ignoreDisabled) {
-        List<InCallServiceInfo> list = getInCallServiceComponents(packageName, type,
-                ignoreDisabled);
+    private InCallServiceInfo getInCallServiceComponent(UserHandle userHandle,
+            String packageName, int type, boolean ignoreDisabled) {
+        List<InCallServiceInfo> list = getInCallServiceComponents(userHandle,
+                packageName, type, ignoreDisabled);
         if (list != null && !list.isEmpty()) {
             return list.get(0);
         }
         return null;
     }
 
-    private List<InCallServiceInfo> getInCallServiceComponents(int type) {
-        return getInCallServiceComponents(null, null, type);
+    private List<InCallServiceInfo> getInCallServiceComponents(
+            UserHandle userHandle, int type) {
+        return getInCallServiceComponents(userHandle, null, null, type);
     }
 
-    private List<InCallServiceInfo> getInCallServiceComponents(String packageName, int type,
-            boolean ignoreDisabled) {
-        return getInCallServiceComponents(packageName, null, type, ignoreDisabled);
+    private List<InCallServiceInfo> getInCallServiceComponents(UserHandle userHandle,
+            String packageName, int type, boolean ignoreDisabled) {
+        return getInCallServiceComponents(userHandle, packageName, null,
+                type, ignoreDisabled);
     }
 
-    private List<InCallServiceInfo> getInCallServiceComponents(ComponentName componentName,
-            int type) {
-        return getInCallServiceComponents(null, componentName, type);
+    private List<InCallServiceInfo> getInCallServiceComponents(UserHandle userHandle,
+            ComponentName componentName, int type) {
+        return getInCallServiceComponents(userHandle, null, componentName, type);
     }
 
-    private List<InCallServiceInfo> getInCallServiceComponents(String packageName,
-            ComponentName componentName, int requestedType) {
-        return getInCallServiceComponents(packageName, componentName, requestedType,
-                true /* ignoreDisabled */);
+    private List<InCallServiceInfo> getInCallServiceComponents(UserHandle userHandle,
+            String packageName, ComponentName componentName, int requestedType) {
+        return getInCallServiceComponents(userHandle, packageName,
+                componentName, requestedType, true /* ignoreDisabled */);
     }
 
-    private List<InCallServiceInfo> getInCallServiceComponents(String packageName,
-            ComponentName componentName, int requestedType, boolean ignoreDisabled) {
+    private List<InCallServiceInfo> getInCallServiceComponents(UserHandle userHandle,
+            String packageName, ComponentName componentName,
+            int requestedType, boolean ignoreDisabled) {
         List<InCallServiceInfo> retval = new LinkedList<>();
 
         Intent serviceIntent = new Intent(InCallService.SERVICE_INTERFACE);
@@ -1728,16 +1837,15 @@ public class InCallController extends CallsManagerListenerBase implements
         if (componentName != null) {
             serviceIntent.setComponent(componentName);
         }
-
         PackageManager packageManager = mContext.getPackageManager();
-        Context userContext = mContext.createContextAsUser(mCallsManager.getCurrentUserHandle(),
+        Context userContext = mContext.createContextAsUser(userHandle,
                 0 /* flags */);
         PackageManager userPackageManager = userContext != null ?
                 userContext.getPackageManager() : packageManager;
         for (ResolveInfo entry : packageManager.queryIntentServicesAsUser(
                 serviceIntent,
                 PackageManager.GET_META_DATA | PackageManager.MATCH_DISABLED_COMPONENTS,
-                mCallsManager.getCurrentUserHandle().getIdentifier())) {
+                userHandle.getIdentifier())) {
             ServiceInfo serviceInfo = entry.serviceInfo;
 
             if (serviceInfo != null) {
@@ -1748,8 +1856,8 @@ public class InCallController extends CallsManagerListenerBase implements
                         serviceInfo.metaData.getBoolean(
                                 TelecomManager.METADATA_INCLUDE_SELF_MANAGED_CALLS, false);
 
-                int currentType = getInCallServiceType(entry.serviceInfo, packageManager,
-                        packageName);
+                int currentType = getInCallServiceType(userHandle,
+                        entry.serviceInfo, packageManager, packageName);
                 ComponentName foundComponentName =
                         new ComponentName(serviceInfo.packageName, serviceInfo.name);
                 if (requestedType == IN_CALL_SERVICE_TYPE_NON_UI) {
@@ -1800,8 +1908,8 @@ public class InCallController extends CallsManagerListenerBase implements
     /**
      * Returns the type of InCallService described by the specified serviceInfo.
      */
-    private int getInCallServiceType(ServiceInfo serviceInfo, PackageManager packageManager,
-            String packageName) {
+    private int getInCallServiceType(UserHandle userHandle, ServiceInfo serviceInfo,
+            PackageManager packageManager, String packageName) {
         // Verify that the InCallService requires the BIND_INCALL_SERVICE permission which
         // enforces that only Telecom can bind to it.
         boolean hasServiceBindPermission = serviceInfo.permission != null &&
@@ -1853,7 +1961,7 @@ public class InCallController extends CallsManagerListenerBase implements
         // Check to see that it is the default dialer package
         boolean isDefaultDialerPackage = Objects.equals(serviceInfo.packageName,
                 mDefaultDialerCache.getDefaultDialerApplication(
-                    mCallsManager.getCurrentUserHandle().getIdentifier()));
+                    userHandle.getIdentifier()));
         if (isDefaultDialerPackage && isUIService) {
             return IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI;
         }
@@ -1872,11 +1980,11 @@ public class InCallController extends CallsManagerListenerBase implements
         return IN_CALL_SERVICE_TYPE_INVALID;
     }
 
-    private void adjustServiceBindingsForEmergency() {
+    private void adjustServiceBindingsForEmergency(UserHandle userHandle) {
         // The connected UI is not the system UI, so lets check if we should switch them
         // if there exists an emergency number.
         if (mCallsManager.isInEmergencyCall()) {
-            mInCallServiceConnection.setHasEmergency(true);
+            mInCallServiceConnections.get(userHandle).setHasEmergency(true);
         }
     }
 
@@ -1889,7 +1997,7 @@ public class InCallController extends CallsManagerListenerBase implements
      * @param service The {@link IInCallService} implementation.
      * @return True if we successfully connected.
      */
-    private boolean onConnected(InCallServiceInfo info, IBinder service) {
+    private boolean onConnected(InCallServiceInfo info, IBinder service, UserHandle userHandle) {
         Log.i(this, "onConnected to %s", info.getComponentName());
 
         if (info.getType() == IN_CALL_SERVICE_TYPE_CAR_MODE_UI
@@ -1898,7 +2006,9 @@ public class InCallController extends CallsManagerListenerBase implements
             trackCallingUserInterfaceStarted(info);
         }
         IInCallService inCallService = IInCallService.Stub.asInterface(service);
-        mInCallServices.put(info, inCallService);
+        mInCallServices.putIfAbsent(userHandle,
+                new ArrayMap<InCallController.InCallServiceInfo, IInCallService>());
+        mInCallServices.get(userHandle).put(info, inCallService);
 
         try {
             inCallService.setInCallAdapter(
@@ -1944,10 +2054,11 @@ public class InCallController extends CallsManagerListenerBase implements
                 return 0;
             }
 
+            UserHandle userFromCall = getUserFromCall(call);
             // Only send the RTT call if it's a UI in-call service
             boolean includeRttCall = false;
-            if (mInCallServiceConnection != null) {
-                includeRttCall = info.equals(mInCallServiceConnection.getInfo());
+            if (mInCallServiceConnections.containsKey(userFromCall)) {
+                includeRttCall = info.equals(mInCallServiceConnections.get(userFromCall).getInfo());
             }
 
             // Track the call if we don't already know about it.
@@ -1973,14 +2084,16 @@ public class InCallController extends CallsManagerListenerBase implements
      *
      * @param disconnectedInfo The {@link InCallServiceInfo} of the service which disconnected.
      */
-    private void onDisconnected(InCallServiceInfo disconnectedInfo) {
+    private void onDisconnected(InCallServiceInfo disconnectedInfo, UserHandle userHandle) {
         Log.i(this, "onDisconnected from %s", disconnectedInfo.getComponentName());
         if (disconnectedInfo.getType() == IN_CALL_SERVICE_TYPE_CAR_MODE_UI
                 || disconnectedInfo.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI
                 || disconnectedInfo.getType() == IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI) {
             trackCallingUserInterfaceStopped(disconnectedInfo);
         }
-        mInCallServices.remove(disconnectedInfo);
+        if (mInCallServices.containsKey(userHandle)) {
+            mInCallServices.get(userHandle).remove(disconnectedInfo);
+        }
     }
 
     /**
@@ -1989,27 +2102,44 @@ public class InCallController extends CallsManagerListenerBase implements
      * @param call The {@link Call}.
      */
     private void updateCall(Call call) {
-        updateCall(call, false /* videoProviderChanged */, false);
+        updateCall(call, false /* videoProviderChanged */, false, null);
     }
 
     /**
      * Informs all {@link InCallService} instances of the updated call information.
      *
-     * @param call The {@link Call}.
+     * @param call                 The {@link Call}.
      * @param videoProviderChanged {@code true} if the video provider changed, {@code false}
-     *      otherwise.
-     * @param rttInfoChanged {@code true} if any information about the RTT session changed,
-     * {@code false} otherwise.
+     *                             otherwise.
+     * @param rttInfoChanged       {@code true} if any information about the RTT session changed,
+     *                             {@code false} otherwise.
+     * @param exceptPackageName    When specified, this package name will not get a call update.
+     *                             Used ONLY from {@link Call#putConnectionServiceExtras(int, Bundle, String)} to
+     *                             ensure we can propagate extras changes between InCallServices but
+     *                             not inform the requestor of their own change.
      */
-    private void updateCall(Call call, boolean videoProviderChanged, boolean rttInfoChanged) {
-        if (!mInCallServices.isEmpty()) {
+    private void updateCall(Call call, boolean videoProviderChanged, boolean rttInfoChanged,
+            String exceptPackageName) {
+        UserHandle userFromCall = getUserFromCall(call);
+        if (mInCallServices.containsKey(userFromCall)) {
             Log.i(this, "Sending updateCall %s", call);
             List<ComponentName> componentsUpdated = new ArrayList<>();
-            for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.entrySet()) {
+            for (Map.Entry<InCallServiceInfo, IInCallService> entry : mInCallServices.
+                    get(userFromCall).entrySet()) {
                 InCallServiceInfo info = entry.getKey();
                 if (info == null) {
                     continue;
                 }
+                ComponentName componentName = info.getComponentName();
+
+                // If specified, skip ICS if it matches the package name.  Used for cases where on
+                // ICS makes an update to extras and we want to skip updating the same ICS with the
+                // change that it implemented.
+                if (exceptPackageName != null
+                        && componentName.getPackageName().equals(exceptPackageName)) {
+                    continue;
+                }
+
                 if (call.isExternalCall() && !info.isExternalCallsSupported()) {
                     continue;
                 }
@@ -2024,10 +2154,10 @@ public class InCallController extends CallsManagerListenerBase implements
                         videoProviderChanged /* includeVideoProvider */,
                         mCallsManager.getPhoneAccountRegistrar(),
                         info.isExternalCallsSupported(),
-                        rttInfoChanged && info.equals(mInCallServiceConnection.getInfo()),
+                        rttInfoChanged && info.equals(
+                                mInCallServiceConnections.get(userFromCall).getInfo()),
                         info.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI ||
                         info.getType() == IN_CALL_SERVICE_TYPE_NON_UI);
-                ComponentName componentName = info.getComponentName();
                 IInCallService inCallService = entry.getValue();
                 componentsUpdated.add(componentName);
 
@@ -2064,8 +2194,11 @@ public class InCallController extends CallsManagerListenerBase implements
     /**
      * @return true if we are bound to the UI InCallService and it is connected.
      */
-    private boolean isBoundAndConnectedToServices() {
-        return mInCallServiceConnection != null && mInCallServiceConnection.isConnected();
+    private boolean isBoundAndConnectedToServices(UserHandle userHandle) {
+        if (!mInCallServiceConnections.containsKey(userHandle)) {
+            return false;
+        }
+        return mInCallServiceConnections.get(userHandle).isConnected();
     }
 
     /**
@@ -2084,15 +2217,17 @@ public class InCallController extends CallsManagerListenerBase implements
     public void dump(IndentingPrintWriter pw) {
         pw.println("mInCallServices (InCalls registered):");
         pw.increaseIndent();
-        for (InCallServiceInfo info : mInCallServices.keySet()) {
-            pw.println(info);
-        }
+        mInCallServices.values().forEach(inCallServices -> {
+            for (InCallServiceInfo info : inCallServices.keySet()) {
+                pw.println(info);
+            }
+        });
         pw.decreaseIndent();
 
         pw.println("ServiceConnections (InCalls bound):");
         pw.increaseIndent();
-        if (mInCallServiceConnection != null) {
-            mInCallServiceConnection.dump(pw);
+        for (InCallServiceConnection inCallServiceConnection : mInCallServiceConnections.values()) {
+            inCallServiceConnection.dump(pw);
         }
         pw.decreaseIndent();
 
@@ -2102,22 +2237,25 @@ public class InCallController extends CallsManagerListenerBase implements
     /**
      * @return The package name of the UI which is currently bound, or null if none.
      */
-    private ComponentName getConnectedUi() {
-        InCallServiceInfo connectedUi = mInCallServices.keySet().stream().filter(
-                i -> i.getType() == IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI
-                        || i.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI)
-                .findAny()
-                .orElse(null);
-        if (connectedUi != null) {
-            return connectedUi.mComponentName;
+    private ComponentName getConnectedUi(UserHandle userHandle) {
+        if (mInCallServices.containsKey(userHandle)) {
+            InCallServiceInfo connectedUi = mInCallServices.get(
+                            userHandle).keySet().stream().filter(
+                            i -> i.getType() == IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI
+                                    || i.getType() == IN_CALL_SERVICE_TYPE_SYSTEM_UI)
+                    .findAny()
+                    .orElse(null);
+            if (connectedUi != null) {
+                return connectedUi.mComponentName;
+            }
         }
         return null;
     }
 
-    public boolean doesConnectedDialerSupportRinging() {
+    public boolean doesConnectedDialerSupportRinging(UserHandle userHandle) {
         String ringingPackage =  null;
 
-        ComponentName connectedPackage = getConnectedUi();
+        ComponentName connectedPackage = getConnectedUi(userHandle);
         if (connectedPackage != null) {
             ringingPackage = connectedPackage.getPackageName().trim();
             Log.d(this, "doesConnectedDialerSupportRinging: alreadyConnectedPackage=%s",
@@ -2127,7 +2265,7 @@ public class InCallController extends CallsManagerListenerBase implements
         if (TextUtils.isEmpty(ringingPackage)) {
             // The current in-call UI returned nothing, so lets use the default dialer.
             ringingPackage = mDefaultDialerCache.getRoleManagerAdapter().getDefaultDialerApp(
-                    mCallsManager.getCurrentUserHandle().getIdentifier());
+                    userHandle.getIdentifier());
             if (ringingPackage != null) {
                 Log.d(this, "doesConnectedDialerSupportRinging: notCurentlyConnectedPackage=%s",
                         ringingPackage);
@@ -2142,7 +2280,7 @@ public class InCallController extends CallsManagerListenerBase implements
             .setPackage(ringingPackage);
         List<ResolveInfo> entries = mContext.getPackageManager().queryIntentServicesAsUser(
                 intent, PackageManager.GET_META_DATA,
-                mCallsManager.getCurrentUserHandle().getIdentifier());
+                userHandle.getIdentifier());
         if (entries.isEmpty()) {
             Log.w(this, "doesConnectedDialerSupportRinging: couldn't find dialer's package info"
                     + " <sad trombone>");
@@ -2221,8 +2359,8 @@ public class InCallController extends CallsManagerListenerBase implements
         // Disabled InCallService should also be considered as a valid InCallService here so that
         // it can be added to the CarModeTracker, in case it will be enabled in future.
         InCallServiceInfo info =
-                getInCallServiceComponent(packageName, IN_CALL_SERVICE_TYPE_CAR_MODE_UI,
-                        false /* ignoreDisabled */);
+                getInCallServiceComponent(mCallsManager.getCurrentUserHandle(),
+                        packageName, IN_CALL_SERVICE_TYPE_CAR_MODE_UI, false /* ignoreDisabled */);
         return info != null && info.getType() == IN_CALL_SERVICE_TYPE_CAR_MODE_UI;
     }
 
@@ -2271,16 +2409,19 @@ public class InCallController extends CallsManagerListenerBase implements
     public void updateCarModeForConnections() {
         Log.i(this, "updateCarModeForConnections: car mode apps: %s",
                 mCarModeTracker.getCarModeApps().stream().collect(Collectors.joining(", ")));
-        if (mInCallServiceConnection != null) {
+
+        if (mInCallServiceConnections.containsKey(mCallsManager.getCurrentUserHandle())) {
+            CarSwappingInCallServiceConnection inCallServiceConnection = mInCallServiceConnections.
+                    get(mCallsManager.getCurrentUserHandle());
             if (shouldUseCarModeUI()) {
                 Log.i(this, "updateCarModeForConnections: potentially update car mode app.");
-                mInCallServiceConnection.changeCarModeApp(
-                        mCarModeTracker.getCurrentCarModePackage());
+                inCallServiceConnection.changeCarModeApp(mCarModeTracker.getCurrentCarModePackage(),
+                        mCallsManager.getCurrentUserHandle());
             } else {
-                if (mInCallServiceConnection.isCarMode()) {
+                if (inCallServiceConnection.isCarMode()) {
                     Log.i(this, "updateCarModeForConnections: car mode no longer "
                             + "applicable; disabling");
-                    mInCallServiceConnection.disableCarMode();
+                    inCallServiceConnection.disableCarMode();
                 }
             }
         }
@@ -2388,7 +2529,7 @@ public class InCallController extends CallsManagerListenerBase implements
                                                         == PermissionChecker.PERMISSION_GRANTED;
     }
 
-    private void sendCrashedInCallServiceNotification(String packageName) {
+    private void sendCrashedInCallServiceNotification(String packageName, UserHandle userHandle) {
         PackageManager packageManager = mContext.getPackageManager();
         CharSequence appName;
         String systemDialer = mDefaultDialerCache.getSystemDialerApplication();
@@ -2416,8 +2557,8 @@ public class InCallController extends CallsManagerListenerBase implements
                 .setStyle(new Notification.BigTextStyle()
                         .bigText(mContext.getText(
                                 R.string.notification_incallservice_not_responding_body)));
-        notificationManager.notify(NOTIFICATION_TAG, IN_CALL_SERVICE_NOTIFICATION_ID,
-                builder.build());
+        notificationManager.notifyAsUser(NOTIFICATION_TAG, IN_CALL_SERVICE_NOTIFICATION_ID,
+                builder.build(), userHandle);
     }
 
     private void updateCallTracking(Call call, InCallServiceInfo info, boolean isAdd) {
@@ -2425,5 +2566,12 @@ public class InCallController extends CallsManagerListenerBase implements
         boolean hasUi = type == IN_CALL_SERVICE_TYPE_CAR_MODE_UI
                 || type == IN_CALL_SERVICE_TYPE_DEFAULT_DIALER_UI;
         call.maybeOnInCallServiceTrackingChanged(isAdd, hasUi);
+    }
+
+    private UserHandle getUserFromCall(Call call) {
+        // Call may never be specified, so we can fall back to using the CallManager current user.
+        return call == null
+                ? mCallsManager.getCurrentUserHandle()
+                : call.getUserHandleFromTargetPhoneAccount();
     }
 }

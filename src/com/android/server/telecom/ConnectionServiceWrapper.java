@@ -23,15 +23,21 @@ import android.app.AppOpsManager;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.pm.PackageManager;
+import android.location.Location;
+import android.location.LocationManager;
+import android.location.LocationRequest;
 import android.net.Uri;
 import android.os.Binder;
 import android.os.Bundle;
+import android.os.CancellationSignal;
 import android.os.IBinder;
 import android.os.ParcelFileDescriptor;
+import android.os.Process;
 import android.os.RemoteException;
+import android.os.ResultReceiver;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
-import android.telecom.CallScreeningService;
+import android.telecom.CallEndpoint;
 import android.telecom.Connection;
 import android.telecom.ConnectionRequest;
 import android.telecom.ConnectionService;
@@ -43,11 +49,15 @@ import android.telecom.ParcelableConference;
 import android.telecom.ParcelableConnection;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
+import android.telecom.QueryLocationException;
 import android.telecom.StatusHints;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.CellIdentity;
 import android.telephony.TelephonyManager;
+import android.util.Pair;
+
+import androidx.annotation.Nullable;
 
 import com.android.internal.annotations.VisibleForTesting;
 import com.android.internal.telecom.IConnectionService;
@@ -62,7 +72,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.Objects;
 
 /**
@@ -76,6 +90,10 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         ConnectionServiceFocusManager.ConnectionServiceFocus {
 
     private static final String TELECOM_ABBREVIATION = "cast";
+
+    private CompletableFuture<Pair<Integer, Location>> mQueryLocationFuture = null;
+    private @Nullable CancellationSignal mOngoingQueryLocationRequest = null;
+    private final ExecutorService mQueryLocationExecutor = Executors.newSingleThreadExecutor();
 
     private final class Adapter extends IConnectionServiceAdapter.Stub {
 
@@ -724,6 +742,26 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
         }
 
         @Override
+        public void requestCallEndpointChange(String callId, CallEndpoint endpoint,
+                ResultReceiver callback, Session.Info sessionInfo) {
+            Log.startSession(sessionInfo, "CSW.rCEC", mPackageAbbreviation);
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    logIncoming("requestCallEndpointChange %s %s", callId,
+                            endpoint.getEndpointName());
+                    mCallsManager.requestCallEndpointChange(endpoint, callback);
+                }
+            } catch (Throwable t) {
+                Log.e(ConnectionServiceWrapper.this, t, "");
+                throw t;
+            } finally {
+                Binder.restoreCallingIdentity(token);
+                Log.endSession();
+            }
+        }
+
+        @Override
         public void setStatusHints(String callId, StatusHints statusHints,
                 Session.Info sessionInfo) {
             Log.startSession(sessionInfo, "CSW.sSH", mPackageAbbreviation);
@@ -754,7 +792,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     Bundle.setDefusable(extras, true);
                     Call call = mCallIdMapper.getCall(callId);
                     if (call != null) {
-                        call.putExtras(Call.SOURCE_CONNECTION_SERVICE, extras);
+                        call.putConnectionServiceExtras(extras);
                     }
                 }
             } catch (Throwable t) {
@@ -888,7 +926,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     // an emergency call.
                             mPhoneAccountRegistrar.getCallCapablePhoneAccounts(null /*uriScheme*/,
                             false /*includeDisabledAccounts*/, userHandle, 0 /*capabilities*/,
-                            0 /*excludedCapabilities*/);
+                            0 /*excludedCapabilities*/, false);
                     PhoneAccountHandle phoneAccountHandle = null;
                     for (PhoneAccountHandle accountHandle : accountHandles) {
                         if(accountHandle.equals(callingPhoneAccountHandle)) {
@@ -1196,6 +1234,71 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 Log.endSession();
             }
         }
+
+        @Override
+        public void queryLocation(String callId, long timeoutMillis, String provider,
+                ResultReceiver callback, Session.Info sessionInfo) {
+            Log.startSession(sessionInfo, "CSW.qL", mPackageAbbreviation);
+
+            TelecomManager telecomManager = mContext.getSystemService(TelecomManager.class);
+            if (telecomManager == null || !telecomManager.getSimCallManager().getComponentName()
+                    .equals(getComponentName())) {
+                callback.send(0 /* isSuccess */,
+                        getQueryLocationErrorResult(QueryLocationException.ERROR_NOT_PERMITTED));
+                Log.endSession();
+                return;
+            }
+
+            String opPackageName = mContext.getOpPackageName();
+            int packageUid = -1;
+            try {
+                packageUid = mContext.getPackageManager().getPackageUid(opPackageName,
+                        PackageManager.PackageInfoFlags.of(0));
+            } catch (PackageManager.NameNotFoundException e) {
+                // packageUid is -1
+            }
+
+            try {
+                mAppOpsManager.noteProxyOp(
+                        AppOpsManager.OPSTR_FINE_LOCATION,
+                        opPackageName,
+                        packageUid,
+                        null,
+                        null);
+            } catch (SecurityException e) {
+                Log.e(ConnectionServiceWrapper.this, e, "");
+            }
+
+            if (!callingUidMatchesPackageManagerRecords(getComponentName().getPackageName())) {
+                throw new SecurityException(String.format("queryCurrentLocation: "
+                                + "uid mismatch found : callingPackageName=[%s], callingUid=[%d]",
+                        getComponentName().getPackageName(), Binder.getCallingUid()));
+            }
+
+            Call call = mCallIdMapper.getCall(callId);
+            if (call == null || !call.isEmergencyCall()) {
+                callback.send(0 /* isSuccess */,
+                        getQueryLocationErrorResult(QueryLocationException
+                                .ERROR_NOT_ALLOWED_FOR_NON_EMERGENCY_CONNECTIONS));
+                Log.endSession();
+                return;
+            }
+
+            long token = Binder.clearCallingIdentity();
+            try {
+                synchronized (mLock) {
+                    logIncoming("queryLocation %s %d", callId, timeoutMillis);
+                    ConnectionServiceWrapper.this.queryCurrentLocation(timeoutMillis, provider,
+                            callback);
+                }
+            } catch (Throwable t) {
+                Log.e(ConnectionServiceWrapper.this, t, "");
+                throw t;
+            } finally {
+                Binder.restoreCallingIdentity(token);
+                Log.endSession();
+            }
+        }
     }
 
     private final Adapter mAdapter = new Adapter();
@@ -1222,7 +1325,8 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
      * @param context The context.
      * @param userHandle The {@link UserHandle} to use when binding.
      */
-    ConnectionServiceWrapper(
+    @VisibleForTesting
+    public ConnectionServiceWrapper(
             ComponentName componentName,
             ConnectionServiceRepository connectionServiceRepository,
             PhoneAccountRegistrar phoneAccountRegistrar,
@@ -1280,6 +1384,137 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
             return lastKnownCellIdentity;
         }
         return null;
+    }
+
+    @VisibleForTesting
+    @SuppressWarnings("FutureReturnValueIgnored")
+    public void queryCurrentLocation(long timeoutMillis, String provider, ResultReceiver callback) {
+
+        if (mQueryLocationFuture != null && !mQueryLocationFuture.isDone()) {
+            callback.send(0 /* isSuccess */,
+                    getQueryLocationErrorResult(
+                            QueryLocationException.ERROR_PREVIOUS_REQUEST_EXISTS));
+            return;
+        }
+
+        LocationManager locationManager = (LocationManager) mContext.createAttributionContext(
+                ConnectionServiceWrapper.class.getSimpleName()).getSystemService(
+                Context.LOCATION_SERVICE);
+
+        if (locationManager == null) {
+            callback.send(0 /* isSuccess */,
+                    getQueryLocationErrorResult(QueryLocationException.ERROR_SERVICE_UNAVAILABLE));
+        }
+
+        mQueryLocationFuture = new CompletableFuture<Pair<Integer, Location>>()
+                .completeOnTimeout(
+                        Pair.create(QueryLocationException.ERROR_REQUEST_TIME_OUT, null),
+                        timeoutMillis, TimeUnit.MILLISECONDS);
+
+        mOngoingQueryLocationRequest = new CancellationSignal();
+        locationManager.getCurrentLocation(
+                provider,
+                new LocationRequest.Builder(0)
+                        .setQuality(LocationRequest.QUALITY_HIGH_ACCURACY)
+                        .setLocationSettingsIgnored(true)
+                        .build(),
+                mOngoingQueryLocationRequest,
+                mQueryLocationExecutor,
+                (location) -> mQueryLocationFuture.complete(Pair.create(null, location)));
+
+        mQueryLocationFuture.whenComplete((result, e) -> {
+            if (e != null) {
+                callback.send(0,
+                        getQueryLocationErrorResult(QueryLocationException.ERROR_UNSPECIFIED));
+            }
+            if (result.second != null) {
+                callback.send(1, getQueryLocationResult(result.second));
+            } else {
+                callback.send(0, getQueryLocationErrorResult(result.first));
+            }
+
+            if (mOngoingQueryLocationRequest != null) {
+                mOngoingQueryLocationRequest.cancel();
+                mOngoingQueryLocationRequest = null;
+            }
+
+            if (mQueryLocationFuture != null) {
+                mQueryLocationFuture = null;
+            }
+        });
+    }
+
+    private Bundle getQueryLocationResult(Location location) {
+        Bundle extras = new Bundle();
+        extras.putParcelable(Connection.EXTRA_KEY_QUERY_LOCATION, location);
+        return extras;
+    }
+
+    private Bundle getQueryLocationErrorResult(int result) {
+        String message;
+
+        switch (result) {
+            case QueryLocationException.ERROR_REQUEST_TIME_OUT:
+                message = "The operation was not completed on time";
+                break;
+            case QueryLocationException.ERROR_PREVIOUS_REQUEST_EXISTS:
+                message = "The operation was rejected due to a previous request exists";
+                break;
+            case QueryLocationException.ERROR_NOT_PERMITTED:
+                message = "The operation is not permitted";
+                break;
+            case QueryLocationException.ERROR_NOT_ALLOWED_FOR_NON_EMERGENCY_CONNECTIONS:
+                message = "Non-emergency call connection are not allowed";
+                break;
+            case QueryLocationException.ERROR_SERVICE_UNAVAILABLE:
+                message = "The operation has failed due to service is not available";
+                break;
+            default:
+                message = "The operation has failed due to an unknown or unspecified error";
+        }
+
+        QueryLocationException exception = new QueryLocationException(message, result);
+        Bundle extras = new Bundle();
+        extras.putParcelable(QueryLocationException.QUERY_LOCATION_ERROR, exception);
+        return extras;
+    }
+
+    /**
+     * helper method that compares the binder_uid to what the packageManager_uid reports for the
+     * passed in packageName.
+     *
+     * returns true if the binder_uid matches the packageManager_uid records
+     */
+    private boolean callingUidMatchesPackageManagerRecords(String packageName) {
+        int packageUid = -1;
+        int callingUid = Binder.getCallingUid();
+
+        PackageManager pm;
+        try{
+            pm = mContext.createContextAsUser(
+                    UserHandle.getUserHandleForUid(callingUid), 0).getPackageManager();
+        }
+        catch (Exception e){
+            Log.i(this, "callingUidMatchesPackageManagerRecords:"
+                    + " createContextAsUser hit exception=[%s]", e.toString());
+            return false;
+        }
+
+        if (pm != null) {
+            try {
+                packageUid = pm.getPackageUid(packageName, PackageManager.PackageInfoFlags.of(0));
+            } catch (PackageManager.NameNotFoundException e) {
+                // packageUid is -1.
+            }
+        }
+
+        if (packageUid != callingUid) {
+            Log.i(this, "callingUidMatchesPackageManagerRecords: uid mismatch found for "
+                    + "packageName=[%s]. packageManager reports packageUid=[%d] but "
+                    + "binder reports callingUid=[%d]", packageName, packageUid, callingUid);
+        }
+
+        return packageUid == callingUid;
     }
 
     /**
@@ -1694,6 +1929,54 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                 mServiceInterface.onCallAudioStateChanged(callId, audioState,
                         Log.getExternalSession(TELECOM_ABBREVIATION));
             } catch (RemoteException e) {
+            }
+        }
+    }
+
+    /** @see IConnectionService#onCallEndpointChanged(String, CallEndpoint, Session.Info) */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public void onCallEndpointChanged(Call activeCall, CallEndpoint callEndpoint) {
+        final String callId = mCallIdMapper.getCallId(activeCall);
+        if (callId != null && isServiceValid("onCallEndpointChanged")) {
+            try {
+                logOutgoing("onCallEndpointChanged %s %s", callId, callEndpoint);
+                mServiceInterface.onCallEndpointChanged(callId, callEndpoint,
+                        Log.getExternalSession(TELECOM_ABBREVIATION));
+            } catch (RemoteException e) {
+                Log.d(this, "Remote exception calling onCallEndpointChanged");
+            }
+        }
+    }
+
+    /** @see IConnectionService#onAvailableCallEndpointsChanged(String, List, Session.Info) */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public void onAvailableCallEndpointsChanged(Call activeCall,
+            Set<CallEndpoint> availableCallEndpoints) {
+        final String callId = mCallIdMapper.getCallId(activeCall);
+        if (callId != null && isServiceValid("onAvailableCallEndpointsChanged")) {
+            try {
+                logOutgoing("onAvailableCallEndpointsChanged %s", callId);
+                List<CallEndpoint> availableEndpoints = new ArrayList<>(availableCallEndpoints);
+                mServiceInterface.onAvailableCallEndpointsChanged(callId, availableEndpoints,
+                        Log.getExternalSession(TELECOM_ABBREVIATION));
+            } catch (RemoteException e) {
+                Log.d(this,
+                        "Remote exception calling onAvailableCallEndpointsChanged");
+            }
+        }
+    }
+
+    /** @see IConnectionService#onMuteStateChanged(String, boolean, Session.Info) */
+    @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
+    public void onMuteStateChanged(Call activeCall, boolean isMuted) {
+        final String callId = mCallIdMapper.getCallId(activeCall);
+        if (callId != null && isServiceValid("onMuteStateChanged")) {
+            try {
+                logOutgoing("onMuteStateChanged %s %s", callId, isMuted);
+                mServiceInterface.onMuteStateChanged(callId, isMuted,
+                        Log.getExternalSession(TELECOM_ABBREVIATION));
+            } catch (RemoteException e) {
+                Log.d(this, "Remote exception calling onMuteStateChanged");
             }
         }
     }

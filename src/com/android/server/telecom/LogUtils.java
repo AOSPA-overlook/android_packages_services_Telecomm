@@ -88,6 +88,7 @@ public class LogUtils {
         public static final String CSW_REMOVE_CALL = "CSW.rC";
         public static final String CSW_SET_IS_CONFERENCED = "CSW.sIC";
         public static final String CSW_ADD_CONFERENCE_CALL = "CSW.aCC";
+        public static final String CSA_SET_STATE = "CSA.sSS";
     }
 
     public final static class Events {
@@ -211,6 +212,7 @@ public class LogUtils {
                 "CALL_DIAGNOSTIC_SERVICE_TIMEOUT";
         public static final String VERSTAT_CHANGED = "VERSTAT_CHANGED";
         public static final String SET_VOIP_MODE = "SET_VOIP_MODE";
+        public static final String ICS_EXTRAS_CHANGED = "ICS_EXTRAS_CHANGED";
 
         public static class Timings {
             public static final String ACCEPT_TIMING = "accept";

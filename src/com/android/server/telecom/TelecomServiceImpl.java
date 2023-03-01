@@ -27,6 +27,10 @@ import static android.Manifest.permission.READ_SMS;
 import static android.Manifest.permission.REGISTER_SIM_SUBSCRIPTION;
 import static android.Manifest.permission.WRITE_SECURE_SETTINGS;
 import static android.Manifest.permission.MANAGE_OWN_CALLS;
+import static android.telecom.CallAttributes.DIRECTION_INCOMING;
+import static android.telecom.CallAttributes.DIRECTION_OUTGOING;
+import static android.telecom.TelecomManager.TELECOM_TRANSACTION_SUCCESS;
+import static android.telecom.CallException.CODE_ERROR_UNKNOWN;
 
 import android.Manifest;
 import android.app.ActivityManager;
@@ -47,13 +51,22 @@ import android.net.Uri;
 import android.os.Binder;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.OutcomeReceiver;
 import android.os.Process;
+import android.os.RemoteException;
 import android.os.UserHandle;
 import android.provider.BlockedNumberContract;
 import android.provider.Settings;
+import android.telecom.CallAttributes;
+
+import android.telecom.CallException;
+import android.telecom.CallAttributes;
+import android.telecom.CallException;
+import android.telecom.CallStreamingService;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
+import android.telecom.StreamingCall;
 import android.telecom.TelecomAnalytics;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
@@ -62,16 +75,28 @@ import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.EventLog;
 
+import androidx.annotation.NonNull;
+
+import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.telecom.ICallControl;
+import com.android.internal.telecom.ICallEventCallback;
 import com.android.internal.telecom.ITelecomService;
 import com.android.internal.util.IndentingPrintWriter;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.settings.BlockedNumbersActivity;
+import com.android.server.telecom.voip.IncomingCallTransaction;
+import com.android.server.telecom.voip.OutgoingCallTransaction;
+import com.android.server.telecom.voip.TransactionManager;
+import com.android.server.telecom.voip.VoipCallTransaction;
+import com.android.server.telecom.voip.VoipCallTransactionResult;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 
 // TODO: Needed for move to system service: import com.android.internal.R;
 
@@ -110,12 +135,106 @@ public class TelecomServiceImpl {
         }
     }
 
+    private static final String TAG = "TelecomServiceImpl";
     private static final String TIME_LINE_ARG = "timeline";
     private static final int DEFAULT_VIDEO_STATE = -1;
     private static final String PERMISSION_HANDLE_CALL_INTENT =
             "android.permission.HANDLE_CALL_INTENT";
+    private static final String ADD_CALL_ERR_MSG = "Call could not be created or found. "
+            + "Retry operation.";
 
     private final ITelecomService.Stub mBinderImpl = new ITelecomService.Stub() {
+
+        @Override
+        public void addCall(CallAttributes callAttributes, ICallEventCallback callEventCallback,
+                String callId, String callingPackage) {
+            try {
+                Log.startSession("TSI.aC", Log.getPackageAbbreviation(callingPackage));
+                Log.i(TAG, "addCall: id=[%s], attributes=[%s]", callId, callAttributes);
+                PhoneAccountHandle handle = callAttributes.getPhoneAccountHandle();
+
+                // enforce permissions and arguments
+                enforcePermission(android.Manifest.permission.MANAGE_OWN_CALLS);
+                enforceUserHandleMatchesCaller(handle);
+                enforcePhoneAccountIsNotManaged(handle);// only allow self-managed packages (temp.)
+                enforcePhoneAccountIsRegisteredEnabled(handle, handle.getUserHandle());
+                enforceCallingPackage(callingPackage, "addCall");
+
+                VoipCallTransaction transaction = null;
+                // create transaction based on the call direction
+                switch (callAttributes.getDirection()) {
+                    case DIRECTION_OUTGOING:
+                        transaction = new OutgoingCallTransaction(callId, mContext, callAttributes,
+                                mCallsManager);
+                        break;
+                    case DIRECTION_INCOMING:
+                        transaction = new IncomingCallTransaction(callId, callAttributes,
+                                mCallsManager);
+                        break;
+                    default:
+                        throw new IllegalArgumentException(String.format("Invalid Call Direction. "
+                                        + "Was [%d] but should be within [%d,%d]",
+                                callAttributes.getDirection(), DIRECTION_INCOMING,
+                                DIRECTION_OUTGOING));
+                }
+
+                mTransactionManager.addTransaction(transaction, new OutcomeReceiver<>() {
+                    @Override
+                    public void onResult(VoipCallTransactionResult result) {
+                        Log.d(TAG, "addCall: onResult");
+                        Call call = result.getCall();
+
+                        if (call == null || !call.getId().equals(callId)) {
+                            Log.i(TAG, "addCall: onResult: call is null or id mismatch");
+                            onAddCallControl(callId, callEventCallback, null,
+                                    new CallException(ADD_CALL_ERR_MSG, CODE_ERROR_UNKNOWN));
+                            return;
+                        }
+
+                        TransactionalServiceWrapper serviceWrapper =
+                                mTransactionalServiceRepository
+                                        .addNewCallForTransactionalServiceWrapper(handle,
+                                                callEventCallback, mCallsManager, call);
+
+                        call.setTransactionServiceWrapper(serviceWrapper);
+                        ICallControl clientCallControl = serviceWrapper.getICallControl();
+
+                        if (clientCallControl == null) {
+                            throw new IllegalStateException("TransactionalServiceWrapper"
+                                    + "#ICallControl is null.");
+                        }
+
+                        // finally, send objects back to the client
+                        onAddCallControl(callId, callEventCallback, clientCallControl, null);
+                    }
+
+                    @Override
+                    public void onError(@NonNull CallException exception) {
+                        Log.d(TAG, "addCall: onError: e=[%s]", exception.toString());
+                        onAddCallControl(callId, callEventCallback, null, exception);
+                    }
+                });
+            } finally {
+                Log.endSession();
+            }
+        }
+
+        private void onAddCallControl(String callId, ICallEventCallback callEventCallback,
+                ICallControl callControl, CallException callException) {
+            try {
+                if (callException == null) {
+                    callEventCallback.onAddCallControl(callId, TELECOM_TRANSACTION_SUCCESS,
+                            callControl, null);
+                } else {
+                    callEventCallback.onAddCallControl(callId,
+                            CallException.CODE_ERROR_UNKNOWN,
+                            null, callException);
+                }
+            } catch (RemoteException remoteException) {
+                throw remoteException.rethrowAsRuntimeException();
+            }
+        }
+
         @Override
         public PhoneAccountHandle getDefaultOutgoingPhoneAccount(String uriScheme,
                 String callingPackage, String callingFeatureId) {
@@ -135,11 +254,11 @@ public class TelecomServiceImpl {
                         Binder.restoreCallingIdentity(token);
                     }
                     if (isCallerSimCallManager(phoneAccountHandle)
-                        || canReadPhoneState(
+                            || canReadPhoneState(
                             callingPackage,
                             callingFeatureId,
                             "getDefaultOutgoingPhoneAccount")) {
-                      return phoneAccountHandle;
+                        return phoneAccountHandle;
                     }
                     return null;
                 }
@@ -208,11 +327,15 @@ public class TelecomServiceImpl {
                 }
                 synchronized (mLock) {
                     final UserHandle callingUserHandle = Binder.getCallingUserHandle();
+                    boolean hasCrossUserAccess = mContext.checkCallingOrSelfPermission(
+                            Manifest.permission.INTERACT_ACROSS_USERS)
+                            == PackageManager.PERMISSION_GRANTED;
                     long token = Binder.clearCallingIdentity();
                     try {
                         return new ParceledListSlice<>(
                                 mPhoneAccountRegistrar.getCallCapablePhoneAccounts(null,
-                                includeDisabledAccounts, callingUserHandle));
+                                        includeDisabledAccounts, callingUserHandle,
+                                        hasCrossUserAccess));
                     } catch (Exception e) {
                         Log.e(this, e, "getCallCapablePhoneAccounts");
                         throw e;
@@ -259,8 +382,7 @@ public class TelecomServiceImpl {
                 Log.startSession("TSI.gOSMPA", Log.getPackageAbbreviation(callingPackage));
                 try {
                     enforceCallingPackage(callingPackage, "getOwnSelfManagedPhoneAccounts");
-                }
-                catch(SecurityException se){
+                } catch (SecurityException se) {
                     EventLog.writeEvent(0x534e4554, "231986341", Binder.getCallingUid(),
                             "getOwnSelfManagedPhoneAccounts: invalid calling package");
                     throw se;
@@ -274,7 +396,7 @@ public class TelecomServiceImpl {
                     try {
                         return new ParceledListSlice<>(mPhoneAccountRegistrar
                                 .getSelfManagedPhoneAccountsForPackage(callingPackage,
-                                callingUserHandle));
+                                        callingUserHandle));
                     } catch (Exception e) {
                         Log.e(this, e,
                                 "getSelfManagedPhoneAccountsForPackage");
@@ -307,8 +429,8 @@ public class TelecomServiceImpl {
                     long token = Binder.clearCallingIdentity();
                     try {
                         return new ParceledListSlice<>(mPhoneAccountRegistrar
-                                .getCallCapablePhoneAccounts(uriScheme, false,
-                                callingUserHandle));
+                            .getCallCapablePhoneAccounts(uriScheme, false,
+                                    callingUserHandle, false));
                     } catch (Exception e) {
                         Log.e(this, e, "getPhoneAccountsSupportingScheme %s", uriScheme);
                         throw e;
@@ -451,7 +573,7 @@ public class TelecomServiceImpl {
                     long token = Binder.clearCallingIdentity();
                     try {
                         return new ParceledListSlice<>(mPhoneAccountRegistrar
-                                .getAllPhoneAccounts(callingUserHandle));
+                                .getAllPhoneAccounts(callingUserHandle, false));
                     } catch (Exception e) {
                         Log.e(this, e, "getAllPhoneAccounts");
                         throw e;
@@ -479,10 +601,13 @@ public class TelecomServiceImpl {
 
                 synchronized (mLock) {
                     final UserHandle callingUserHandle = Binder.getCallingUserHandle();
+                    boolean hasCrossUserAccess = mContext.checkCallingOrSelfPermission(
+                            Manifest.permission.INTERACT_ACROSS_USERS)
+                            == PackageManager.PERMISSION_GRANTED;
                     long token = Binder.clearCallingIdentity();
                     try {
                         return new ParceledListSlice<>(mPhoneAccountRegistrar
-                                .getAllPhoneAccountHandles(callingUserHandle));
+                                .getAllPhoneAccountHandles(callingUserHandle, hasCrossUserAccess));
                     } catch (Exception e) {
                         Log.e(this, e, "getAllPhoneAccounts");
                         throw e;
@@ -578,9 +703,9 @@ public class TelecomServiceImpl {
                         // and carrier-designated SIM call manager can register accounts with these
                         // capabilities.
                         if (account.hasCapabilities(
-                                        PhoneAccount.CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS)
+                                PhoneAccount.CAPABILITY_SUPPORTS_VOICE_CALLING_INDICATIONS)
                                 || account.hasCapabilities(
-                                        PhoneAccount.CAPABILITY_VOICE_CALLING_AVAILABLE)) {
+                                PhoneAccount.CAPABILITY_VOICE_CALLING_AVAILABLE)) {
                             enforceRegisterVoiceCallingIndicationCapabilities(account);
                         }
                         Bundle extras = account.getExtras();
@@ -777,12 +902,13 @@ public class TelecomServiceImpl {
                 Log.startSession("TSI.sR", Log.getPackageAbbreviation(callingPackage));
                 synchronized (mLock) {
                     enforcePermissionOrPrivilegedDialer(MODIFY_PHONE_STATE, callingPackage);
-
+                    UserHandle callingUserHandle = Binder.getCallingUserHandle();
                     long token = Binder.clearCallingIdentity();
                     try {
                         Log.i(this, "Silence Ringer requested by %s", callingPackage);
-                        mCallsManager.getCallAudioManager().silenceRingers();
-                        mCallsManager.getInCallController().silenceRinger();
+                        Set<UserHandle> userHandles = mCallsManager.getCallAudioManager().
+                                silenceRingers(mContext, callingUserHandle);
+                        mCallsManager.getInCallController().silenceRinger(userHandles);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -795,7 +921,7 @@ public class TelecomServiceImpl {
         /**
          * @see android.telecom.TelecomManager#getDefaultPhoneApp
          * @deprecated - Use {@link android.telecom.TelecomManager#getDefaultDialerPackage()}
-         *         instead.
+         * instead.
          */
         @Override
         public ComponentName getDefaultPhoneApp() {
@@ -809,8 +935,8 @@ public class TelecomServiceImpl {
 
         /**
          * @return the package name of the current user-selected default dialer. If no default
-         *         has been selected, the package name of the system dialer is returned. If
-         *         neither exists, then {@code null} is returned.
+         * has been selected, the package name of the system dialer is returned. If
+         * neither exists, then {@code null} is returned.
          * @see android.telecom.TelecomManager#getDefaultDialerPackage
          */
         @Override
@@ -833,8 +959,8 @@ public class TelecomServiceImpl {
         /**
          * @param userId user id to get the default dialer package for
          * @return the package name of the current user-selected default dialer. If no default
-         *         has been selected, the package name of the system dialer is returned. If
-         *         neither exists, then {@code null} is returned.
+         * has been selected, the package name of the system dialer is returned. If
+         * neither exists, then {@code null} is returned.
          * @see android.telecom.TelecomManager#getDefaultDialerPackage
          */
         @Override
@@ -920,7 +1046,7 @@ public class TelecomServiceImpl {
                                 new AttributionSource(Binder.getCallingUid(),
                                         callingPackage, /*attributionTag*/ null)),
                         "Checking whether the caller has MANAGE_ONGOING_CALLS permission")
-                                == PermissionChecker.PERMISSION_GRANTED;
+                        == PermissionChecker.PERMISSION_GRANTED;
             } finally {
                 Log.endSession();
             }
@@ -1104,7 +1230,6 @@ public class TelecomServiceImpl {
 
         /**
          * @see android.telecom.TelecomManager#acceptRingingCall(int)
-         *
          */
         @Override
         public void acceptRingingCallWithVideoState(String packageName, int videoState) {
@@ -1139,9 +1264,10 @@ public class TelecomServiceImpl {
 
                 synchronized (mLock) {
 
+                    UserHandle callingUser = Binder.getCallingUserHandle();
                     long token = Binder.clearCallingIdentity();
                     try {
-                        mCallsManager.getInCallController().bringToForeground(showDialpad);
+                        mCallsManager.getInCallController().bringToForeground(showDialpad, callingUser);
                     } finally {
                         Binder.restoreCallingIdentity(token);
                     }
@@ -1172,6 +1298,7 @@ public class TelecomServiceImpl {
                 Log.endSession();
             }
         }
+
         /**
          * @see android.telecom.TelecomManager#handleMmi
          */
@@ -1194,7 +1321,7 @@ public class TelecomServiceImpl {
                 }
 
                 return retval;
-            }finally {
+            } finally {
                 Log.endSession();
             }
         }
@@ -1235,7 +1362,7 @@ public class TelecomServiceImpl {
                     Binder.restoreCallingIdentity(token);
                 }
                 return retval;
-            }finally {
+            } finally {
                 Log.endSession();
             }
         }
@@ -1329,7 +1456,7 @@ public class TelecomServiceImpl {
                             phoneAccountHandle.getComponentName() != null) {
                         if (isCallerSimCallManager(phoneAccountHandle)
                                 && TelephonyUtil.isPstnComponentName(
-                                        phoneAccountHandle.getComponentName())) {
+                                phoneAccountHandle.getComponentName())) {
                             Log.v(this, "Allowing call manager to add incoming call with PSTN" +
                                     " handle");
                         } else {
@@ -1339,7 +1466,7 @@ public class TelecomServiceImpl {
                             // Make sure it doesn't cross the UserHandle boundary
                             enforceUserHandleMatchesCaller(phoneAccountHandle);
                             enforcePhoneAccountIsRegisteredEnabled(phoneAccountHandle,
-                                    Binder.getCallingUserHandle());
+                                    phoneAccountHandle.getUserHandle());
                             if (isSelfManagedConnectionService(phoneAccountHandle)) {
                                 // Self-managed phone account, ensure it has MANAGE_OWN_CALLS.
                                 mContext.enforceCallingOrSelfPermission(
@@ -1392,7 +1519,7 @@ public class TelecomServiceImpl {
                             phoneAccountHandle.getComponentName() != null) {
                         if (isCallerSimCallManager(phoneAccountHandle)
                                 && TelephonyUtil.isPstnComponentName(
-                                        phoneAccountHandle.getComponentName())) {
+                                phoneAccountHandle.getComponentName())) {
                             Log.v(this, "Allowing call manager to add incoming conference" +
                                     " with PSTN handle");
                         } else {
@@ -1404,8 +1531,9 @@ public class TelecomServiceImpl {
                             enforcePhoneAccountIsRegisteredEnabled(phoneAccountHandle,
                                     Binder.getCallingUserHandle());
                             if (isSelfManagedConnectionService(phoneAccountHandle)) {
-                                throw new SecurityException("Self-Managed ConnectionServices cannot add "
-                                        + "adhoc conference calls");
+                                throw new SecurityException(
+                                        "Self-Managed ConnectionServices cannot add "
+                                                + "adhoc conference calls");
                             }
                         }
                         long token = Binder.clearCallingIdentity();
@@ -1514,7 +1642,8 @@ public class TelecomServiceImpl {
                             intent.putExtra(CallIntentProcessor.KEY_IS_UNKNOWN_CALL, true);
                             intent.putExtra(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE,
                                     phoneAccountHandle);
-                            mCallIntentProcessorAdapter.processUnknownCallIntent(mCallsManager, intent);
+                            mCallIntentProcessorAdapter.processUnknownCallIntent(mCallsManager,
+                                    intent);
                         } finally {
                             Binder.restoreCallingIdentity(token);
                         }
@@ -1559,6 +1688,7 @@ public class TelecomServiceImpl {
                 enforceCallingPackage(callingPackage, "placeCall");
 
                 PhoneAccountHandle phoneAccountHandle = null;
+                boolean clearPhoneAccountHandleExtra = false;
                 if (extras != null) {
                     phoneAccountHandle = extras.getParcelable(
                             TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE);
@@ -1567,28 +1697,32 @@ public class TelecomServiceImpl {
                         extras.remove(TelecomManager.EXTRA_IS_HANDOVER);
                     }
                 }
-                ComponentName componentName = phoneAccountHandle != null
-                        ? phoneAccountHandle.getComponentName() : null;
-                String packageName = componentName != null
-                        ? componentName.getPackageName() : null;
+                boolean isSelfManaged = phoneAccountHandle != null &&
+                        isSelfManagedConnectionService(phoneAccountHandle);
+                if (isSelfManaged) {
+                    try {
+                        mContext.enforceCallingOrSelfPermission(
+                                Manifest.permission.MANAGE_OWN_CALLS,
+                                "Self-managed ConnectionServices require "
+                                        + "MANAGE_OWN_CALLS permission.");
+                    } catch (SecurityException e) {
+                        // Fallback to use mobile network to avoid disclosing phone account handle
+                        // package information
+                        clearPhoneAccountHandleExtra = true;
+                    }
 
-                // Two cases here: the app calling this API is trying to place a call on another
-                // ConnectionService or the app calling this API implements a self-managed
-                // ConnectionService and is trying to place a call on their own ConnectionService.
-                // Case 1: If the app does not implement the ConnectionService they are requesting
-                // the call be placed on, ensure they have the correct CALL_PHONE permissions.
-                if (!callingPackage.equals(packageName) && !canCallPhone(callingPackage,
-                        callingFeatureId, "CALL_PHONE permission required to place calls.")) {
-                    throw new SecurityException("CALL_PHONE permission required to place calls.");
+                    if (!clearPhoneAccountHandleExtra && !callingPackage.equals(
+                            phoneAccountHandle.getComponentName().getPackageName())
+                            && !canCallPhone(callingPackage, callingFeatureId,
+                            "CALL_PHONE permission required to place calls.")) {
+                        // The caller is not allowed to place calls, so fallback to use mobile
+                        // network.
+                        clearPhoneAccountHandleExtra = true;
+                    }
+                } else if (!canCallPhone(callingPackage, callingFeatureId, "placeCall")) {
+                    throw new SecurityException("Package " + callingPackage
+                            + " is not allowed to place phone calls");
                 }
-                // Case 2: The package name of the caller matches the package name of the
-                // PhoneAccountHandle, so ensure the app has MANAGE_OWN_CALLS permission.
-                if (callingPackage.equals(packageName)) {
-                    mContext.enforceCallingOrSelfPermission(Manifest.permission.MANAGE_OWN_CALLS,
-                            "Self-managed ConnectionServices require MANAGE_OWN_CALLS permission.");
-                }
-
-                boolean isSelfManaged = isSelfManagedConnectionService(phoneAccountHandle);
 
                 // Note: we can still get here for the default/system dialer, even if the Phone
                 // permission is turned off. This is because the default/system dialer is always
@@ -1618,6 +1752,9 @@ public class TelecomServiceImpl {
                         final Intent intent = new Intent(hasCallPrivilegedPermission ?
                                 Intent.ACTION_CALL_PRIVILEGED : Intent.ACTION_CALL, handle);
                         if (extras != null) {
+                            if (clearPhoneAccountHandleExtra) {
+                                extras.remove(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE);
+                            }
                             extras.setDefusable(true);
                             intent.putExtras(extras);
                         }
@@ -1712,11 +1849,12 @@ public class TelecomServiceImpl {
         }
 
         /**
-         * Dumps the current state of the TelecomService.  Used when generating problem reports.
+         * Dumps the current state of the TelecomService.  Used when generating problem
+         * reports.
          *
-         * @param fd The file descriptor.
+         * @param fd     The file descriptor.
          * @param writer The print writer to dump the state to.
-         * @param args Optional dump arguments.
+         * @param args   Optional dump arguments.
          */
         @Override
         protected void dump(FileDescriptor fd, final PrintWriter writer, String[] args) {
@@ -1937,9 +2075,12 @@ public class TelecomServiceImpl {
 
         /**
          * A method intended for use in testing to clean up any calls that get stuck in the
-         * {@link CallState#DISCONNECTED} or {@link CallState#DISCONNECTING} states. Stuck calls
-         * during CTS cause cascading failures, so if the CTS test detects such a state, it should
-         * call this method via a shell command to clean up before moving on to the next test.
+         * {@link CallState#DISCONNECTED} or {@link CallState#DISCONNECTING} states. Stuck
+         * calls
+         * during CTS cause cascading failures, so if the CTS test detects such a state, it
+         * should
+         * call this method via a shell command to clean up before moving on to the next
+         * test.
          * Also cleans up any pending futures related to
          * {@link android.telecom.CallDiagnosticService}s.
          */
@@ -1950,14 +2091,18 @@ public class TelecomServiceImpl {
                 synchronized (mLock) {
                     enforceShellOnly(Binder.getCallingUid(), "cleanupStuckCalls");
                     Binder.withCleanCallingIdentity(() -> {
+                        Set<UserHandle> userHandles = new HashSet<>();
                         for (Call call : mCallsManager.getCalls()) {
                             call.cleanup();
                             if (call.getState() == CallState.DISCONNECTED
                                     || call.getState() == CallState.DISCONNECTING) {
                                 mCallsManager.markCallAsRemoved(call);
                             }
+                            userHandles.add(call.getUserHandleFromTargetPhoneAccount());
                         }
-                        mCallsManager.getInCallController().unbindFromServices();
+                        for (UserHandle userHandle : userHandles) {
+                            mCallsManager.getInCallController().unbindFromServices(userHandle);
+                        }
                     });
                 }
             } finally {
@@ -1967,7 +2112,8 @@ public class TelecomServiceImpl {
 
         /**
          * A method intended for test to clean up orphan {@link PhoneAccount}. An orphan
-         * {@link PhoneAccount} is a phone account belongs to an invalid {@link UserHandle} or a
+         * {@link PhoneAccount} is a phone account belongs to an invalid {@link UserHandle}
+         * or a
          * deleted package.
          *
          * @return the number of orphan {@code PhoneAccount} deleted.
@@ -2161,8 +2307,8 @@ public class TelecomServiceImpl {
          * Determines whether there are any ongoing {@link PhoneAccount#CAPABILITY_SELF_MANAGED}
          * calls for a given {@code packageName} and {@code userHandle}.
          *
-         * @param packageName the package name of the app to check calls for.
-         * @param userHandle the user handle on which to check for calls.
+         * @param packageName    the package name of the app to check calls for.
+         * @param userHandle     the user handle on which to check for calls.
          * @param callingPackage The caller's package name.
          * @return {@code true} if there are ongoing calls, {@code false} otherwise.
          */
@@ -2190,6 +2336,20 @@ public class TelecomServiceImpl {
             }
         }
     };
+
+    private boolean enforceCallStreamingPermission(String packageName, PhoneAccountHandle handle,
+            int uid) {
+        // TODO: implement this permission check (make sure the calling package is the d2di package)
+        PhoneAccount account = mPhoneAccountRegistrar.getPhoneAccount(handle,
+                UserHandle.getUserHandleForUid(uid));
+        if (account == null
+                || !account.hasCapabilities(PhoneAccount.CAPABILITY_SUPPORTS_CALL_STREAMING)) {
+            throw new SecurityException(
+                    "The phone account handle in requesting can't support call streaming: "
+                            + handle);
+        }
+        return true;
+    }
 
     /**
      * @return whether to return early without doing the action/throwing
@@ -2241,6 +2401,8 @@ public class TelecomServiceImpl {
     private final SubscriptionManagerAdapter mSubscriptionManagerAdapter;
     private final SettingsSecureAdapter mSettingsSecureAdapter;
     private final TelecomSystem.SyncRoot mLock;
+    private TransactionManager mTransactionManager;
+    private final TransactionalServiceRepository mTransactionalServiceRepository;
 
     public TelecomServiceImpl(
             Context context,
@@ -2277,6 +2439,14 @@ public class TelecomServiceImpl {
                             defaultDialer);
             mContext.sendBroadcastAsUser(intent, UserHandle.of(userId));
         });
+
+        mTransactionManager = TransactionManager.getInstance();
+        mTransactionalServiceRepository = new TransactionalServiceRepository();
+    }
+
+    @VisibleForTesting
+    public void setTransactionManager(TransactionManager transactionManager){
+        mTransactionManager = transactionManager;
     }
 
     public ITelecomService.Stub getBinder() {
@@ -2386,6 +2556,29 @@ public class TelecomServiceImpl {
         if(!phoneAccount.isEnabled()) {
             EventLog.writeEvent(0x534e4554, "26864502", Binder.getCallingUid(), "E");
             throw new SecurityException("This PhoneAccountHandle is not enabled for this user!");
+        }
+    }
+
+    // Enforce that the PhoneAccountHandle is tied to a self-managed package and not managed (aka
+    // sim calling, etc.)
+    private void enforcePhoneAccountIsNotManaged(PhoneAccountHandle phoneAccountHandle) {
+        PhoneAccount phoneAccount = mPhoneAccountRegistrar.getPhoneAccount(phoneAccountHandle,
+                phoneAccountHandle.getUserHandle());
+        if (phoneAccount == null) {
+            throw new IllegalArgumentException("enforcePhoneAccountIsNotManaged:"
+                    + " phoneAccount is null");
+        }
+        if (phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION)) {
+            throw new IllegalArgumentException("enforcePhoneAccountIsNotManaged:"
+                    + " CAPABILITY_SIM_SUBSCRIPTION is not allowed");
+        }
+        if (phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)) {
+            throw new IllegalArgumentException("enforcePhoneAccountIsNotManaged:"
+                    + " CAPABILITY_CALL_PROVIDER is not allowed");
+        }
+        if (phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_CONNECTION_MANAGER)) {
+            throw new IllegalArgumentException("enforcePhoneAccountIsNotManaged:"
+                    + " CAPABILITY_CONNECTION_MANAGER is not allowed");
         }
     }
 
