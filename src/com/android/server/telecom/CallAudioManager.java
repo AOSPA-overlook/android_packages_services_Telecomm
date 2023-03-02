@@ -73,6 +73,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
     private boolean mIsInCrsMode = false;
     private int mOriginalCallType = Call.CALL_TYPE_UNKNOWN;
     private boolean mIsSilenced = false;
+    private boolean mIsCrsSupportedFromAudioHal = false;
 
     public CallAudioManager(CallAudioRouteStateMachine callAudioRouteStateMachine,
             CallsManager callsManager,
@@ -107,6 +108,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
         mRingbackPlayer = ringbackPlayer;
         mBluetoothStateReceiver = bluetoothStateReceiver;
         mDtmfLocalTonePlayer = dtmfLocalTonePlayer;
+        mIsCrsSupportedFromAudioHal = isCrsSupportedFromAudioHal();
 
         mPlayerFactory.setCallAudioManager(this);
         mCallAudioModeStateMachine.setCallAudioManager(this);
@@ -142,7 +144,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
             playToneAfterCallConnected(call);
         }
         //reset CRS mode once call state changed.
-        if ((call == mForegroundCall) && mIsInCrsMode &&
+        if (!mIsCrsSupportedFromAudioHal && (call == mForegroundCall) && mIsInCrsMode &&
                 (newState == CallState.ACTIVE || newState == CallState.DISCONNECTED)) {
             Log.i(this, "CRS call is finished");
             mIsInCrsMode = false;
@@ -553,7 +555,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 userHandles.add(userFromCall);
                 call.silence();
             }
-            if(mIsInCrsMode) {
+
+            if(!mIsCrsSupportedFromAudioHal && mIsInCrsMode) {
                 Log.i(this, "Fire silence CRS.");
                 onCallSilenceCrs();
             }
@@ -741,7 +744,9 @@ public class CallAudioManager extends CallsManagerListenerBase {
             case CallState.SIMULATED_RINGING:
                 mIsInCrsMode = call.isCrsCall();
                 mOriginalCallType = call.getOriginalCallType();
-                if(mIsInCrsMode) {
+                Log.i(LOG_TAG, "isCrsMode : " + mIsInCrsMode +
+                        " ,CRS supported from audio HAL :: " + mIsCrsSupportedFromAudioHal);
+                if(!mIsCrsSupportedFromAudioHal && mIsInCrsMode) {
                     Log.i(LOG_TAG, "set Audio Route to SPEAKER");
                     setAudioRoute(CallAudioState.ROUTE_SPEAKER, null);
                 }
@@ -859,20 +864,31 @@ public class CallAudioManager extends CallsManagerListenerBase {
             mForegroundCall = possibleConnectingCall == null ?
                     mActiveDialingOrConnectingCalls.iterator().next() : possibleConnectingCall;
         } else if (mRingingCalls.size() > 0) {
+            Log.i(this, "Ringing calls size is " + mRingingCalls.size());
             mForegroundCall = mRingingCalls.iterator().next();
-            // If there is more than one incoming call, we stop and start the ringtone
-            // when foreground ringing call changes, e.g. the first incoming call is
-            // rejected or ended by remote.
-            if (mRingingCalls.size() == 1 && mForegroundCall != null && oldForegroundCall != null
-                && mForegroundCall != oldForegroundCall) {
-                Log.v(this, "Foreground call changes, start the new ringtone.");
-                if (oldForegroundCall.isCrsCall() && mIsInCrsMode) {
-                    Log.v(this, "Reset CRS mode");
-                    mIsInCrsMode = false;
+            // If there two ringing calls, stop and start the ringtone when foreground ringing
+            // call changed. Also needs to update ringing call when one of them ended or rejected.
+            if (mForegroundCall != null && oldForegroundCall != null
+                    && mForegroundCall == oldForegroundCall) {
+                for (Call call : mRingingCalls) {
+                    if (call != mForegroundCall) {
+                        Log.i(this, "Two ringing calls");
+                        mForegroundCall = call;
+                    }
                 }
-                if (!mIsSilenced) {
-                   onRingingCallChanged();
+            }
+            if (mForegroundCall != null && oldForegroundCall != null
+                    && mForegroundCall != oldForegroundCall) {
+                // Ensure compatibility with in-call mode to play CRS solution, restore inCall
+                // volume if forground ringing call is changed and CRS is not supported from
+                // audio HAL.
+                if (!mIsCrsSupportedFromAudioHal && mIsInCrsMode) {
+                    Log.v(this, "Reset in-call volume for CRS call");
+                    mRinger.restoreSystemSpeakerInCallVolume();
                 }
+                mIsInCrsMode = mForegroundCall.isCrsCall();
+                Log.v(this, "Ringing call changed.");
+                onRingingCallChanged();
             }
         } else if (mHoldingCalls.size() > 0) {
             mForegroundCall = mHoldingCalls.iterator().next();
@@ -900,7 +916,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 .setForegroundCallIsVoip(
                         mForegroundCall != null && isCallVoip(mForegroundCall))
                 .setSession(Log.createSubsession())
-                .setIsCrsCall(mIsInCrsMode).build();
+                .setIsCrsCall(!mIsCrsSupportedFromAudioHal && mIsInCrsMode).build();
     }
 
     /**
@@ -1082,7 +1098,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                     (mRingingCalls.size() == 1 && call == mRingingCalls.iterator().next())) {
                 //CRS call need to be restored inCall volume while call accepting or rejecting.
                 //To avoid CRS audio becomes loud/low when restore volume, mute CRS first.
-                if (mIsInCrsMode) {
+                if (!mIsCrsSupportedFromAudioHal && mIsInCrsMode) {
                     mRinger.muteCrs(true);
                     mRinger.stopPlayingCrs();
                 } else {
@@ -1110,5 +1126,16 @@ public class CallAudioManager extends CallsManagerListenerBase {
     @VisibleForTesting
     public SparseArray<LinkedHashSet<Call>> getCallStateToCalls() {
         return mCallStateToCalls;
+    }
+
+    public boolean isCrsSupportedFromAudioHal() {
+        if (mCallsManager == null) {
+            return false;
+        }
+        AudioManager am = mCallsManager.getContext()
+            .getSystemService(AudioManager.class);
+        String isCrsSupported = am.getParameters("isCRSsupported");
+        Log.i(this, "CRS is supported from audio HAL : " + isCrsSupported);
+        return isCrsSupported.equals("isCRSsupported=1");
     }
 }
