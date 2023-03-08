@@ -16,11 +16,14 @@
 
 package com.android.server.telecom.transactionalVoipApp;
 
+import android.os.Bundle;
 import android.telecom.CallControlCallback;
 import android.telecom.CallEndpoint;
 import android.telecom.CallControl;
 import android.telecom.CallEventCallback;
+import android.telecom.DisconnectCause;
 import android.util.Log;
+
 import java.util.List;
 
 import androidx.annotation.NonNull;
@@ -60,13 +63,8 @@ public class MyVoipCall implements CallControlCallback, CallEventCallback {
     }
 
     @Override
-    public void onReject(@NonNull Consumer<Boolean> wasCompleted) {
-        Log.i(TAG, String.format("onReject: callId=[%s]", mCallId));
-        wasCompleted.accept(Boolean.TRUE);
-    }
-
-    @Override
-    public void onDisconnect(@NonNull Consumer<Boolean> wasCompleted) {
+    public void onDisconnect(@NonNull DisconnectCause cause,
+            @NonNull Consumer<Boolean> wasCompleted) {
         Log.i(TAG, String.format("onDisconnect: callId=[%s]", mCallId));
         wasCompleted.accept(Boolean.TRUE);
     }
@@ -80,6 +78,12 @@ public class MyVoipCall implements CallControlCallback, CallEventCallback {
     @Override
     public void onCallStreamingFailed(int reason) {
         Log.i(TAG, String.format("onCallStreamingFailed: id=[%s], reason=[%d]", mCallId, reason));
+    }
+
+    @Override
+    public void onEvent(String event, Bundle extras) {
+        Log.i(TAG, String.format("onEvent: id=[%s], event=[%s], extras=[%s]",
+                mCallId, event, extras));
     }
 
     @Override

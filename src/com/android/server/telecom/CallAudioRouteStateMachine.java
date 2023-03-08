@@ -49,6 +49,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.Executor;
 
 /**
  * This class describes the available routes of a call as a state machine.
@@ -81,14 +82,16 @@ public class CallAudioRouteStateMachine extends StateMachine {
                 WiredHeadsetManager wiredHeadsetManager,
                 StatusBarNotifier statusBarNotifier,
                 CallAudioManager.AudioServiceFactory audioServiceFactory,
-                int earpieceControl) {
+                int earpieceControl,
+                Executor asyncTaskExecutor) {
             return new CallAudioRouteStateMachine(context,
                     callsManager,
                     bluetoothManager,
                     wiredHeadsetManager,
                     statusBarNotifier,
                     audioServiceFactory,
-                    earpieceControl);
+                    earpieceControl,
+                    asyncTaskExecutor);
         }
     }
     /** Values for CallAudioRouteStateMachine constructor's earPieceRouting arg. */
@@ -1500,6 +1503,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
     private final QuiescentSpeakerRoute mQuiescentSpeakerRoute = new QuiescentSpeakerRoute();
     private final StreamingState mStreamingState = new StreamingState();
 
+    private final Executor mAsyncTaskExecutor;
+
     /**
      * A few pieces of hidden state. Used to avoid exponential explosion of number of explicit
      * states
@@ -1538,7 +1543,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
             WiredHeadsetManager wiredHeadsetManager,
             StatusBarNotifier statusBarNotifier,
             CallAudioManager.AudioServiceFactory audioServiceFactory,
-            int earpieceControl) {
+            int earpieceControl,
+            Executor asyncTaskExecutor) {
         super(NAME);
         mContext = context;
         mCallsManager = callsManager;
@@ -1548,7 +1554,7 @@ public class CallAudioRouteStateMachine extends StateMachine {
         mStatusBarNotifier = statusBarNotifier;
         mAudioServiceFactory = audioServiceFactory;
         mLock = callsManager.getLock();
-
+        mAsyncTaskExecutor = asyncTaskExecutor;
         createStates(earpieceControl);
     }
 
@@ -1560,7 +1566,7 @@ public class CallAudioRouteStateMachine extends StateMachine {
             WiredHeadsetManager wiredHeadsetManager,
             StatusBarNotifier statusBarNotifier,
             CallAudioManager.AudioServiceFactory audioServiceFactory,
-            int earpieceControl, Looper looper) {
+            int earpieceControl, Looper looper, Executor asyncTaskExecutor) {
         super(NAME, looper);
         mContext = context;
         mCallsManager = callsManager;
@@ -1570,6 +1576,7 @@ public class CallAudioRouteStateMachine extends StateMachine {
         mStatusBarNotifier = statusBarNotifier;
         mAudioServiceFactory = audioServiceFactory;
         mLock = callsManager.getLock();
+        mAsyncTaskExecutor = asyncTaskExecutor;
 
         createStates(earpieceControl);
     }
@@ -1651,7 +1658,8 @@ public class CallAudioRouteStateMachine extends StateMachine {
                 new IntentFilter(AudioManager.ACTION_SPEAKERPHONE_STATE_CHANGED));
 
         mStatusBarNotifier.notifyMute(initState.isMuted());
-        mStatusBarNotifier.notifySpeakerphone(initState.getRoute() == CallAudioState.ROUTE_SPEAKER);
+        // We used to call mStatusBarNotifier.notifySpeakerphone, but that makes no sense as there
+        // is never a call at this boot (init) time.
         setInitialState(mRouteCodeToQuiescentState.get(initState.getRoute()));
         start();
     }
@@ -1744,26 +1752,32 @@ public class CallAudioRouteStateMachine extends StateMachine {
 
     private void setSpeakerphoneOn(boolean on) {
         Log.i(this, "turning speaker phone %s", on);
-        AudioDeviceInfo speakerDevice = null;
-        for (AudioDeviceInfo info : mAudioManager.getAvailableCommunicationDevices()) {
-            if (info.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                speakerDevice = info;
-                break;
+        final boolean hasAnyCalls = mCallsManager.hasAnyCalls();
+        // These APIs are all via two-way binder calls so can potentially block Telecom.  Since none
+        // of this has to happen in the Telecom lock we'll offload it to the async executor.
+        mAsyncTaskExecutor.execute(() -> {
+            AudioDeviceInfo speakerDevice = null;
+            for (AudioDeviceInfo info : mAudioManager.getAvailableCommunicationDevices()) {
+                if (info.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    speakerDevice = info;
+                    break;
+                }
             }
-        }
-        boolean speakerOn = false;
-        if (speakerDevice != null && on) {
-            boolean result = mAudioManager.setCommunicationDevice(speakerDevice);
-            if (result) {
-                speakerOn = true;
+            boolean speakerOn = false;
+            if (speakerDevice != null && on) {
+                boolean result = mAudioManager.setCommunicationDevice(speakerDevice);
+                if (result) {
+                    speakerOn = true;
+                }
+            } else {
+                AudioDeviceInfo curDevice = mAudioManager.getCommunicationDevice();
+                if (curDevice != null
+                        && curDevice.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    mAudioManager.clearCommunicationDevice();
+                }
             }
-        } else {
-            AudioDeviceInfo curDevice = mAudioManager.getCommunicationDevice();
-            if (curDevice != null && curDevice.getType() == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
-                mAudioManager.clearCommunicationDevice();
-            }
-        }
-        mStatusBarNotifier.notifySpeakerphone(speakerOn);
+            mStatusBarNotifier.notifySpeakerphone(hasAnyCalls && speakerOn);
+        });
     }
 
     private void setBluetoothOn(String address) {
