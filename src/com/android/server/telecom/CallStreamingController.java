@@ -111,11 +111,11 @@ public class CallStreamingController extends CallsManagerListenerBase {
 
             if (mCallsManager.getCallStreamingController().isStreaming()) {
                 future.complete(new VoipCallTransactionResult(
-                        VoipCallTransactionResult.RESULT_SUCCEED, null));
-            } else {
-                future.complete(new VoipCallTransactionResult(
                         VoipCallTransactionResult.RESULT_FAILED,
                         "STREAMING_FAILED_ALREADY_STREAMING"));
+            } else {
+                future.complete(new VoipCallTransactionResult(
+                        VoipCallTransactionResult.RESULT_SUCCEED, null));
             }
 
             return future;
@@ -177,7 +177,7 @@ public class CallStreamingController extends CallsManagerListenerBase {
             CompletableFuture<VoipCallTransactionResult> future = new CompletableFuture<>();
 
             RoleManager roleManager = mContext.getSystemService(RoleManager.class);
-            PackageManager packageManager = mContext.getSystemService(PackageManager.class);
+            PackageManager packageManager = mContext.getPackageManager();
             if (roleManager == null || packageManager == null) {
                 Log.e(TAG, "Can't find system service");
                 future.complete(new VoipCallTransactionResult(
