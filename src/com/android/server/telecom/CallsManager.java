@@ -155,6 +155,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -460,6 +461,9 @@ public class CallsManager extends Call.ListenerBase
 
     private LinkedList<HandlerThread> mGraphHandlerThreads;
 
+    // An executor that can be used to fire off async tasks that do not block Telecom in any manner.
+    private final Executor mAsyncTaskExecutor;
+
     private boolean mHasActiveRttCall = false;
 
     private AnomalyReporterAdapter mAnomalyReporter = new AnomalyReporterAdapterImpl();
@@ -575,7 +579,9 @@ public class CallsManager extends Call.ListenerBase
             RoleManagerAdapter roleManagerAdapter,
             ToastFactory toastFactory,
             CallEndpointControllerFactory callEndpointControllerFactory,
-            CallAnomalyWatchdog callAnomalyWatchdog) {
+            CallAnomalyWatchdog callAnomalyWatchdog,
+            Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
+            Executor asyncTaskExecutor) {
         mContext = context;
         mLock = lock;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
@@ -603,7 +609,8 @@ public class CallsManager extends Call.ListenerBase
                         wiredHeadsetManager,
                         statusBarNotifier,
                         audioServiceFactory,
-                        CallAudioRouteStateMachine.EARPIECE_AUTO_DETECT
+                        CallAudioRouteStateMachine.EARPIECE_AUTO_DETECT,
+                        asyncTaskExecutor
                 );
         callAudioRouteStateMachine.initialize();
 
@@ -636,7 +643,7 @@ public class CallsManager extends Call.ListenerBase
                 ringtoneFactory, systemVibrator,
                 new Ringer.VibrationEffectProxy(), mInCallController,
                 mContext.getSystemService(NotificationManager.class),
-                mContext.getSystemService(AccessibilityManager.class));
+                accessibilityManagerAdapter);
         mCallRecordingTonePlayer = new CallRecordingTonePlayer(mContext, audioManager,
                 mTimeoutsAdapter, mLock);
         mCallAudioManager = new CallAudioManager(callAudioRouteStateMachine,
@@ -692,6 +699,7 @@ public class CallsManager extends Call.ListenerBase
         context.registerReceiver(mReceiver, intentFilter, Context.RECEIVER_EXPORTED);
         mGraphHandlerThreads = new LinkedList<>();
         mCallAnomalyWatchdog = callAnomalyWatchdog;
+        mAsyncTaskExecutor = asyncTaskExecutor;
         QtiCarrierConfigHelper.getInstance().setup(mContext);
     }
 
@@ -3221,6 +3229,18 @@ public class CallsManager extends Call.ListenerBase
         return constructPossiblePhoneAccounts(handle, user, isVideo, isEmergency, false);
     }
 
+    // Returns whether the device is capable of 2 simultaneous active voice calls on different subs.
+    private boolean isDsdaCallingPossible() {
+        try {
+            return getTelephonyManager().getMaxNumberOfSimultaneouslyActiveSims() > 1
+                    || getTelephonyManager().getPhoneCapability()
+                           .getMaxActiveVoiceSubscriptions() > 1;
+        } catch (Exception e) {
+            Log.w(this, "exception in isDsdaCallingPossible(): ", e);
+            return false;
+        }
+    }
+
     public List<PhoneAccountHandle> constructPossiblePhoneAccounts(Uri handle, UserHandle user,
             boolean isVideo, boolean isEmergency, boolean isConference) {
 
@@ -3454,7 +3474,8 @@ public class CallsManager extends Call.ListenerBase
         setCallState(call, CallState.RINGING, "ringing set explicitly");
     }
 
-    void markCallAsDialing(Call call) {
+    @VisibleForTesting
+    public void markCallAsDialing(Call call) {
         setCallState(call, CallState.DIALING, "dialing set explicitly");
         maybeMoveToSpeakerPhone(call);
         maybeTurnOffMute(call);
@@ -5074,17 +5095,28 @@ public class CallsManager extends Call.ListenerBase
         }
     }
 
+    /**
+     * Ensures that the call will be audible to the user by checking if the voice call stream is
+     * audible, and if not increasing the volume to the default value.
+     */
     private void ensureCallAudible() {
-        AudioManager am = mContext.getSystemService(AudioManager.class);
-        if (am == null) {
-            Log.w(this, "ensureCallAudible: audio manager is null");
-            return;
-        }
-        if (am.getStreamVolume(AudioManager.STREAM_VOICE_CALL) == 0) {
-            Log.i(this, "ensureCallAudible: voice call stream has volume 0. Adjusting to default.");
-            am.setStreamVolume(AudioManager.STREAM_VOICE_CALL,
-                    AudioSystem.getDefaultStreamVolume(AudioManager.STREAM_VOICE_CALL), 0);
-        }
+        // Audio manager APIs can be somewhat slow.  To prevent a potential ANR we will fire off
+        // this opreation on the async task executor.  Note that this operation does not have any
+        // dependency on any Telecom state, so we can safely launch this on a different thread
+        // without worrying that it is in the Telecom sync lock.
+        mAsyncTaskExecutor.execute(() -> {
+            AudioManager am = mContext.getSystemService(AudioManager.class);
+            if (am == null) {
+                Log.w(this, "ensureCallAudible: audio manager is null");
+                return;
+            }
+            if (am.getStreamVolume(AudioManager.STREAM_VOICE_CALL) == 0) {
+                Log.i(this,
+                        "ensureCallAudible: voice call stream has volume 0. Adjusting to default.");
+                am.setStreamVolume(AudioManager.STREAM_VOICE_CALL,
+                        AudioSystem.getDefaultStreamVolume(AudioManager.STREAM_VOICE_CALL), 0);
+            }
+        });
     }
 
     /**
@@ -6140,18 +6172,24 @@ public class CallsManager extends Call.ListenerBase
         }
     }
 
-    // driver method to create and execute a new TransactionalFocusRequestCallback
-    public void transactionRequestNewFocusCall(Call call,
+    /**
+     * Intended for ongoing or new calls that would like to go active/answered and need to
+     * update the mConnectionSvrFocusMgr before setting the state
+     */
+    public void transactionRequestNewFocusCall(Call call, int newCallState,
             OutcomeReceiver<Boolean, CallException> callback) {
         Log.d(this, "transactionRequestNewFocusCall");
-        PendingAction pendingAction = new ActionSetCallState(call, CallState.ACTIVE,
+        PendingAction pendingAction = new ActionSetCallState(call, newCallState,
                 "transactional ActionSetCallState");
         mConnectionSvrFocusMgr
                 .requestFocus(call,
                         new TransactionalFocusRequestCallback(pendingAction, call, callback));
     }
 
-    // request a new call focus and ensure the request was successful
+    /**
+     * Request a new call focus and ensure the request was successful via an OutcomeReceiver. Also,
+     * include a PendingAction that will execute if the call focus change is successful.
+     */
     @VisibleForTesting(visibility = VisibleForTesting.Visibility.PACKAGE)
     public class TransactionalFocusRequestCallback implements
             ConnectionServiceFocusManager.RequestFocusCallback {
@@ -6170,26 +6208,18 @@ public class CallsManager extends Call.ListenerBase
         @Override
         public void onRequestFocusDone(ConnectionServiceFocusManager.CallFocus call) {
             Call currentCallFocus = (Call) mConnectionSvrFocusMgr.getCurrentFocusCall();
-
-            if (currentCallFocus == null) {
-                Log.i(this, "TransactionalFocusRequestCallback: "
-                        + "currentCallFocus is null.");
-                mCallback.onError(new CallException("currentCallFocus is null",
+            // verify the update was successful before updating the state
+            Log.i(this, "tFRC: currentCallFocus=[%s], targetFocus=[%s]",
+                    mTargetCallFocus, currentCallFocus);
+            if (currentCallFocus == null ||
+                    !currentCallFocus.getId().equals(mTargetCallFocus.getId())) {
+                mCallback.onError(new CallException("failed to switch focus to requested call",
                         CallException.CODE_CALL_CANNOT_BE_SET_TO_ACTIVE));
                 return;
             }
-
-            Log.i(this, "TransactionalFocusRequestCallback: targetId=[%s], "
-                    + "currentId=[%s]", mTargetCallFocus.getId(), currentCallFocus.getId());
-            if (!currentCallFocus.getId().equals(mTargetCallFocus.getId())) {
-                Log.i(this, "TransactionalFocusRequestCallback: "
-                        + "currentCallFocus is not equal to targetCallFocus.");
-                mCallback.onError(new CallException("current focus is not target focus",
-                        CallException.CODE_CALL_CANNOT_BE_SET_TO_ACTIVE));
-                return;
-            }
-            mPendingAction.performAction();
-            mCallback.onResult(true);
+            // at this point, we know the FocusManager is able to update successfully
+            mPendingAction.performAction(); // set the call state
+            mCallback.onResult(true); // complete the transaction
         }
     }
 
