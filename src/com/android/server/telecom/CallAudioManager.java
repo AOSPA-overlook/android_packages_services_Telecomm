@@ -27,7 +27,6 @@ import android.provider.Settings.SettingNotFoundException;
 import android.os.UserHandle;
 import android.telecom.CallAudioState;
 import android.telecom.Log;
-import android.telecom.Phone;
 import android.telecom.PhoneAccount;
 import android.telecom.VideoProfile;
 import android.util.SparseArray;
@@ -47,13 +46,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
     public interface AudioServiceFactory {
         IAudioService getAudioService();
     }
-
-    // success message to be logged when disconnected tone future is completed
-    public static final String DISCONNECTED_TONE_SUCCESS_MSG = "Successfully completed "
-            + "disconnected tone future.";
-    // failure message to be logged when disconnected tone future cannot be MANUALLY completed
-    public static final String DISCONNECTED_TONE_FAILURE_MSG = "Disconnected tone future timed"
-            + " out.";
 
     private final String LOG_TAG = CallAudioManager.class.getSimpleName();
 
@@ -538,7 +530,8 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 CallAudioRouteStateMachine.INCLUDE_BLUETOOTH_IN_BASELINE);
     }
 
-    Set<UserHandle> silenceRingers(Context context, UserHandle callingUser) {
+    Set<UserHandle> silenceRingers(Context context, UserHandle callingUser,
+            boolean hasCrossUserPermission) {
         // Store all users from calls that were silenced so that we can silence the
         // InCallServices which are associated with those users.
         Set<UserHandle> userHandles = new HashSet<>();
@@ -548,12 +541,12 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 mIsSilenced = true;
             }
             for (Call call : mRingingCalls) {
-                PhoneAccount targetPhoneAccount = call.getPhoneAccountFromHandle();
                 UserHandle userFromCall = call.getUserHandleFromTargetPhoneAccount();
                 // Do not try to silence calls when calling user is different from the phone account
-                // user and the account does not have CAPABILITY_MULTI_USER enabled.
-                if (!callingUser.equals(userFromCall) && !targetPhoneAccount.
-                        hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER)) {
+                // user, the account does not have CAPABILITY_MULTI_USER enabled, or if the user
+                // does not have the INTERACT_ACROSS_USERS permission enabled.
+                if (!hasCrossUserPermission && !mCallsManager
+                        .isCallVisibleForUser(call, callingUser)) {
                     allCallSilenced = false;
                     continue;
                 }
@@ -966,19 +959,16 @@ public class CallAudioManager extends CallsManagerListenerBase {
     }
 
     private void playToneForDisconnectedCall(Call call) {
-        String callId = call.getId();
         // If this call is being disconnected as a result of being handed over to another call,
         // we will not play a disconnect tone.
         if (call.isHandoverInProgress()) {
             Log.i(LOG_TAG, "Omitting tone because %s is being handed over.", call);
-            completeDisconnectedToneFuture(callId);
             return;
         }
 
         if (mForegroundCall != null && call != mForegroundCall && mCalls.size() > 1) {
             Log.v(LOG_TAG, "Omitting tone because we are not foreground" +
                     " and there is another call.");
-            completeDisconnectedToneFuture(callId);
             return;
         }
 
@@ -1014,16 +1004,11 @@ public class CallAudioManager extends CallsManagerListenerBase {
             Log.d(this, "Found a disconnected call with tone to play %d.", toneToPlay);
 
             if (toneToPlay != InCallTonePlayer.TONE_INVALID) {
-                InCallTonePlayer tonePlayer = mPlayerFactory.createPlayer(toneToPlay);
-                // set call id in InCallTonePlayer to be used for future completion
-                tonePlayer.setCallIdForDisconnectedToneFuture(callId);
-                boolean didToneStart = tonePlayer.startTone();
+                boolean didToneStart = mPlayerFactory.createPlayer(toneToPlay).startTone();
                 if (didToneStart) {
                     mCallsManager.onDisconnectedTonePlaying(true);
                     mIsDisconnectedTonePlaying = true;
                 }
-            } else {
-                completeDisconnectedToneFuture(callId);
             }
         }
     }
@@ -1115,18 +1100,6 @@ public class CallAudioManager extends CallsManagerListenerBase {
         return oldState == CallState.ACTIVE ||
                 oldState == CallState.DIALING ||
                 oldState == CallState.ON_HOLD;
-    }
-
-    @VisibleForTesting
-    public boolean completeDisconnectedToneFuture(String callId){
-        String logPrefix = "completeDisconnectedToneFuture: callId: %s; ";
-        boolean result = Phone.completeDisconnectedToneFuture(callId);
-        if (result) {
-            Log.i(this, logPrefix + DISCONNECTED_TONE_SUCCESS_MSG, callId);
-        } else {
-            Log.w(this, logPrefix + DISCONNECTED_TONE_FAILURE_MSG, callId);
-        }
-        return result;
     }
 
     @VisibleForTesting

@@ -60,13 +60,9 @@ import android.provider.Settings;
 import android.telecom.CallAttributes;
 
 import android.telecom.CallException;
-import android.telecom.CallAttributes;
-import android.telecom.CallException;
-import android.telecom.CallStreamingService;
 import android.telecom.Log;
 import android.telecom.PhoneAccount;
 import android.telecom.PhoneAccountHandle;
-import android.telecom.StreamingCall;
 import android.telecom.TelecomAnalytics;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
@@ -92,11 +88,10 @@ import com.android.server.telecom.voip.VoipCallTransactionResult;
 
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
-import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Locale;
 import java.util.Set;
+import java.util.UUID;
 
 // TODO: Needed for move to system service: import com.android.internal.R;
 
@@ -142,6 +137,44 @@ public class TelecomServiceImpl {
             "android.permission.HANDLE_CALL_INTENT";
     private static final String ADD_CALL_ERR_MSG = "Call could not be created or found. "
             + "Retry operation.";
+    private AnomalyReporterAdapter mAnomalyReporter = new AnomalyReporterAdapterImpl();
+
+    /**
+     * Anomaly Report UUIDs and corresponding error descriptions specific to TelecomServiceImpl.
+     */
+    public static final UUID REGISTER_PHONE_ACCOUNT_ERROR_UUID =
+            UUID.fromString("0e49f82e-6acc-48a9-b088-66c8296c1eb5");
+    public static final String REGISTER_PHONE_ACCOUNT_ERROR_MSG =
+            "Exception thrown while registering phone account.";
+    public static final UUID SET_USER_PHONE_ACCOUNT_ERROR_UUID =
+            UUID.fromString("80866066-7818-4869-bd44-1f7f689543e2");
+    public static final String SET_USER_PHONE_ACCOUNT_ERROR_MSG =
+            "Exception thrown while setting the user selected outgoing phone account.";
+    public static final UUID GET_CALL_CAPABLE_ACCOUNTS_ERROR_UUID =
+            UUID.fromString("4f39b865-01f2-4c1f-83a5-37ce52807e83");
+    public static final String GET_CALL_CAPABLE_ACCOUNTS_ERROR_MSG =
+            "Exception thrown while getting the call capable phone accounts";
+    public static final UUID GET_PHONE_ACCOUNT_ERROR_UUID =
+            UUID.fromString("b653c1f0-91b4-45c8-ad05-3ee4d1006c7f");
+    public static final String GET_PHONE_ACCOUNT_ERROR_MSG =
+            "Exception thrown while retrieving the phone account.";
+    public static final UUID GET_SIM_MANAGER_ERROR_UUID =
+            UUID.fromString("4244cb3f-bd02-4cc5-9f90-f41ea62ce0bb");
+    public static final String GET_SIM_MANAGER_ERROR_MSG =
+            "Exception thrown while retrieving the SIM CallManager.";
+    public static final UUID GET_SIM_MANAGER_FOR_USER_ERROR_UUID =
+            UUID.fromString("5d347ce7-7527-40d3-b98a-09b423ad031c");
+    public static final String GET_SIM_MANAGER_FOR_USER_ERROR_MSG =
+            "Exception thrown while retrieving the SIM CallManager based on the provided user.";
+    public static final UUID PLACE_CALL_SECURITY_EXCEPTION_ERROR_UUID =
+            UUID.fromString("4edf6c8d-1e43-4c94-b0fc-a40c8d80cfe8");
+    public static final String PLACE_CALL_SECURITY_EXCEPTION_ERROR_MSG =
+            "Security exception thrown while placing an outgoing call.";
+
+    @VisibleForTesting
+    public void setAnomalyReporterAdapter(AnomalyReporterAdapter mAnomalyReporterAdapter){
+        mAnomalyReporter = mAnomalyReporterAdapter;
+    }
 
     private final ITelecomService.Stub mBinderImpl = new ITelecomService.Stub() {
 
@@ -301,6 +334,8 @@ public class TelecomServiceImpl {
                                 accountHandle, callingUserHandle);
                     } catch (Exception e) {
                         Log.e(this, e, "setUserSelectedOutgoingPhoneAccount");
+                        mAnomalyReporter.reportAnomaly(SET_USER_PHONE_ACCOUNT_ERROR_UUID,
+                                SET_USER_PHONE_ACCOUNT_ERROR_MSG);
                         throw e;
                     } finally {
                         Binder.restoreCallingIdentity(token);
@@ -327,17 +362,16 @@ public class TelecomServiceImpl {
                 }
                 synchronized (mLock) {
                     final UserHandle callingUserHandle = Binder.getCallingUserHandle();
-                    boolean hasCrossUserAccess = mContext.checkCallingOrSelfPermission(
-                            Manifest.permission.INTERACT_ACROSS_USERS)
-                            == PackageManager.PERMISSION_GRANTED;
                     long token = Binder.clearCallingIdentity();
                     try {
                         return new ParceledListSlice<>(
                                 mPhoneAccountRegistrar.getCallCapablePhoneAccounts(null,
                                         includeDisabledAccounts, callingUserHandle,
-                                        hasCrossUserAccess));
+                                        hasInAppCrossUserPermission()));
                     } catch (Exception e) {
                         Log.e(this, e, "getCallCapablePhoneAccounts");
+                        mAnomalyReporter.reportAnomaly(GET_CALL_CAPABLE_ACCOUNTS_ERROR_UUID,
+                                GET_CALL_CAPABLE_ACCOUNTS_ERROR_MSG);
                         throw e;
                     } finally {
                         Binder.restoreCallingIdentity(token);
@@ -469,7 +503,7 @@ public class TelecomServiceImpl {
                 try {
                     Log.startSession("TSI.gPAFP");
                     return new ParceledListSlice<>(mPhoneAccountRegistrar
-                            .getPhoneAccountsForPackage(packageName, callingUserHandle));
+                            .getAllPhoneAccountHandlesForPackage(callingUserHandle, packageName));
                 } catch (Exception e) {
                     Log.e(this, e, "getPhoneAccountsForPackage %s", packageName);
                     throw e;
@@ -517,6 +551,8 @@ public class TelecomServiceImpl {
                                         /* acrossProfiles */ true);
                     } catch (Exception e) {
                         Log.e(this, e, "getPhoneAccount %s", accountHandle);
+                        mAnomalyReporter.reportAnomaly(GET_PHONE_ACCOUNT_ERROR_UUID,
+                                GET_PHONE_ACCOUNT_ERROR_MSG);
                         throw e;
                     } finally {
                         Binder.restoreCallingIdentity(token);
@@ -601,13 +637,11 @@ public class TelecomServiceImpl {
 
                 synchronized (mLock) {
                     final UserHandle callingUserHandle = Binder.getCallingUserHandle();
-                    boolean hasCrossUserAccess = mContext.checkCallingOrSelfPermission(
-                            Manifest.permission.INTERACT_ACROSS_USERS)
-                            == PackageManager.PERMISSION_GRANTED;
                     long token = Binder.clearCallingIdentity();
                     try {
                         return new ParceledListSlice<>(mPhoneAccountRegistrar
-                                .getAllPhoneAccountHandles(callingUserHandle, hasCrossUserAccess));
+                                .getAllPhoneAccountHandles(callingUserHandle,
+                                        hasInAppCrossUserPermission()));
                     } catch (Exception e) {
                         Log.e(this, e, "getAllPhoneAccounts");
                         throw e;
@@ -638,6 +672,8 @@ public class TelecomServiceImpl {
                     }
                 } catch (Exception e) {
                     Log.e(this, e, "getSimCallManager");
+                    mAnomalyReporter.reportAnomaly(GET_SIM_MANAGER_ERROR_UUID,
+                            GET_SIM_MANAGER_ERROR_MSG);
                     throw e;
                 } finally {
                     Log.endSession();
@@ -662,6 +698,8 @@ public class TelecomServiceImpl {
                     }
                 } catch (Exception e) {
                     Log.e(this, e, "getSimCallManager");
+                    mAnomalyReporter.reportAnomaly(GET_SIM_MANAGER_FOR_USER_ERROR_UUID,
+                            GET_SIM_MANAGER_FOR_USER_ERROR_MSG);
                     throw e;
                 } finally {
                     Log.endSession();
@@ -731,12 +769,16 @@ public class TelecomServiceImpl {
 
                         final long token = Binder.clearCallingIdentity();
                         try {
+                            Log.i(this, "registerPhoneAccount: account=%s",
+                                    account);
                             mPhoneAccountRegistrar.registerPhoneAccount(account);
                         } finally {
                             Binder.restoreCallingIdentity(token);
                         }
                     } catch (Exception e) {
                         Log.e(this, e, "registerPhoneAccount %s", account);
+                        mAnomalyReporter.reportAnomaly(REGISTER_PHONE_ACCOUNT_ERROR_UUID,
+                                REGISTER_PHONE_ACCOUNT_ERROR_MSG);
                         throw e;
                     }
                 }
@@ -907,7 +949,8 @@ public class TelecomServiceImpl {
                     try {
                         Log.i(this, "Silence Ringer requested by %s", callingPackage);
                         Set<UserHandle> userHandles = mCallsManager.getCallAudioManager().
-                                silenceRingers(mContext, callingUserHandle);
+                                silenceRingers(mContext, callingUserHandle,
+                                        hasInAppCrossUserPermission());
                         mCallsManager.getInCallController().silenceRinger(userHandles);
                     } finally {
                         Binder.restoreCallingIdentity(token);
@@ -1024,7 +1067,8 @@ public class TelecomServiceImpl {
                 }
 
                 synchronized (mLock) {
-                    return mCallsManager.hasOngoingCalls();
+                    return mCallsManager.hasOngoingCalls(Binder.getCallingUserHandle(),
+                            hasInAppCrossUserPermission());
                 }
             } finally {
                 Log.endSession();
@@ -1065,7 +1109,8 @@ public class TelecomServiceImpl {
                 }
 
                 synchronized (mLock) {
-                    return mCallsManager.hasOngoingManagedCalls();
+                    return mCallsManager.hasOngoingManagedCalls(Binder.getCallingUserHandle(),
+                            hasInAppCrossUserPermission());
                 }
             } finally {
                 Log.endSession();
@@ -1670,8 +1715,14 @@ public class TelecomServiceImpl {
                     throw new SecurityException("Package " + callingPackage + " is not allowed"
                             + " to start conference call");
                 }
-                mCallsManager.startConference(participants, extras, callingPackage,
-                        Binder.getCallingUserHandle());
+
+                long token = Binder.clearCallingIdentity();
+                try {
+                    mCallsManager.startConference(participants, extras, callingPackage,
+                            Binder.getCallingUserHandle());
+                } finally {
+                    Binder.restoreCallingIdentity(token);
+                }
             } finally {
                 Log.endSession();
             }
@@ -1720,6 +1771,8 @@ public class TelecomServiceImpl {
                         clearPhoneAccountHandleExtra = true;
                     }
                 } else if (!canCallPhone(callingPackage, callingFeatureId, "placeCall")) {
+                    mAnomalyReporter.reportAnomaly(PLACE_CALL_SECURITY_EXCEPTION_ERROR_UUID,
+                            PLACE_CALL_SECURITY_EXCEPTION_ERROR_MSG);
                     throw new SecurityException("Package " + callingPackage
                             + " is not allowed to place phone calls");
                 }
@@ -2745,6 +2798,12 @@ public class TelecomServiceImpl {
         mContext.enforceCallingOrSelfPermission(
                 android.Manifest.permission.INTERACT_ACROSS_USERS, "Must be system or have"
                         + " INTERACT_ACROSS_USERS permission");
+    }
+
+    private boolean hasInAppCrossUserPermission() {
+        return mContext.checkCallingOrSelfPermission(
+                Manifest.permission.INTERACT_ACROSS_USERS)
+                == PackageManager.PERMISSION_GRANTED;
     }
 
     // to be used for TestApi methods that can only be called with SHELL UID.
