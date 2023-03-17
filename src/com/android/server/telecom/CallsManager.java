@@ -186,6 +186,7 @@ public class CallsManager extends Call.ListenerBase
          */
         default void onCallCreated(Call call) {}
         void onCallAdded(Call call);
+        void onCallCreatedButNeverAdded(Call call);
         void onCallRemoved(Call call);
         void onCallStateChanged(Call call, int oldState, int newState);
         void onConnectionServiceChanged(
@@ -286,6 +287,11 @@ public class CallsManager extends Call.ListenerBase
     public static final String EXCEPTION_RETRIEVING_PHONE_ACCOUNTS_EMERGENCY_ERROR_MSG =
             "Exception thrown while retrieving list of potential phone accounts when placing an "
                     + "emergency call.";
+    public static final UUID EMERGENCY_CALL_DISCONNECTED_BEFORE_BEING_ADDED_ERROR_UUID =
+            UUID.fromString("f9a916c8-8d61-4550-9ad3-11c2e84f6364");
+    public static final String EMERGENCY_CALL_DISCONNECTED_BEFORE_BEING_ADDED_ERROR_MSG =
+            "An emergency call was disconnected after the connection was created but before the "
+                    + "call was successfully added to CallsManager.";
 
     private static final int[] OUTGOING_CALL_STATES =
             {CallState.CONNECTING, CallState.SELECT_PHONE_ACCOUNT, CallState.DIALING,
@@ -1606,6 +1612,8 @@ public class CallsManager extends Call.ListenerBase
             // transactional calls should skip Call#startCreateConnection below
             // as that is meant for Call objects with a ConnectionServiceWrapper
             call.setState(CallState.RINGING, "explicitly set new incoming to ringing");
+            // Transactional calls don't get created via a connection service; they are added now.
+            call.setIsCreateConnectionComplete(true);
             addCall(call);
         } else {
             call.startCreateConnection(mPhoneAccountRegistrar);
@@ -3637,6 +3645,8 @@ public class CallsManager extends Call.ListenerBase
      * @param disconnectCause The disconnect cause, see {@link android.telecom.DisconnectCause}.
      */
     public void markCallAsDisconnected(Call call, DisconnectCause disconnectCause) {
+        Log.i(this, "markCallAsDisconnected: call=%s; disconnectCause=%s",
+                call.toString(), disconnectCause.toString());
         int oldState = call.getState();
         if (call.getState() == CallState.SIMULATED_RINGING
                 && disconnectCause.getCode() == DisconnectCause.REMOTE) {
@@ -3659,6 +3669,17 @@ public class CallsManager extends Call.ListenerBase
             } else if (call.getStartRingTime() > 0) {
                 call.setUserMissed(USER_MISSED_NO_ANSWER);
             }
+        }
+
+        // Notify listeners that the call was disconnected before being added to CallsManager.
+        // Listeners will not receive onAdded or onRemoved callbacks.
+        if (!mCalls.contains(call)) {
+            if (call.isEmergencyCall()) {
+                mAnomalyReporter.reportAnomaly(
+                        EMERGENCY_CALL_DISCONNECTED_BEFORE_BEING_ADDED_ERROR_UUID,
+                        EMERGENCY_CALL_DISCONNECTED_BEFORE_BEING_ADDED_ERROR_MSG);
+            }
+            mListeners.forEach(l -> l.onCallCreatedButNeverAdded(call));
         }
 
         // If a call diagnostic service is in use, we will log the original telephony-provided
@@ -4093,7 +4114,11 @@ public class CallsManager extends Call.ListenerBase
                 connectElapsedTime,
                 mClockProxy,
                 mToastFactory);
-        notifyCallCreated(call);
+
+        // Unlike connections, conferences are not created first and then notified as create
+        // connection complete from the CS.  They originate from the CS and are reported directly to
+        // telecom where they're added (see below).
+        call.setIsCreateConnectionComplete(true);
 
         setCallState(call, Call.getStateFromConnectionState(parcelableConference.getState()),
                 "new conference call");
@@ -5183,6 +5208,9 @@ public class CallsManager extends Call.ListenerBase
                 call.setParentCall(parentCall);
             }
         }
+        // Existing connections originate from a connection service, so they are completed creation
+        // by the ConnectionService implicitly.
+        call.setIsCreateConnectionComplete(true);
         addCall(call);
         if (parentCall != null) {
             // Now, set the call as a child of the parent since it has been added to Telecom.  This
@@ -5680,6 +5708,9 @@ public class CallsManager extends Call.ListenerBase
         } else {
             call.setConnectionService(service);
             service.createConnectionFailed(call);
+            if (!mCalls.contains(call)){
+                mListeners.forEach(l -> l.onCallCreatedButNeverAdded(call));
+            }
         }
     }
 
@@ -5702,6 +5733,9 @@ public class CallsManager extends Call.ListenerBase
         } else {
             call.setConnectionService(service);
             service.createConferenceFailed(call);
+            if (!mCalls.contains(call)){
+                mListeners.forEach(l -> l.onCallCreatedButNeverAdded(call));
+            }
         }
     }
 
