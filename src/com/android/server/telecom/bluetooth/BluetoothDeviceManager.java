@@ -471,13 +471,9 @@ public class BluetoothDeviceManager {
         }
     }
 
-    public boolean setLeAudioCommunicationDevice() {
-        Log.i(this, "setLeAudioCommunicationDevice");
-
-        if (mLeAudioSetAsCommunicationDevice) {
-            Log.i(this, "setLeAudioCommunicationDevice already set");
-            return true;
-        }
+    public boolean setLeAudioCommunicationDevice(BluetoothDevice bleDevice) {
+        Log.i(this, "setLeAudioCommunicationDevice " + bleDevice
+                + " mLeAudioSetAsCommunicationDevice = " + mLeAudioSetAsCommunicationDevice);
 
         if (mAudioManager == null) {
             Log.w(this, " mAudioManager is null");
@@ -492,7 +488,8 @@ public class BluetoothDeviceManager {
         }
 
         for (AudioDeviceInfo device : devices) {
-            Log.i(this, " Available device type:  " + device.getType());
+            Log.i(this, " Available device type:  " + device.getType()
+                    + ":: address: " + device.getAddress());
             if (device.getType() == AudioDeviceInfo.TYPE_BLE_HEADSET) {
                 bleHeadset = device;
                 break;
@@ -584,7 +581,7 @@ public class BluetoothDeviceManager {
                  * Only after receiving ACTION_ACTIVE_DEVICE_CHANGED it is known that device that
                  * will be audio switched to is available to be choose as communication device */
                 if (!switchingBtDevices) {
-                    return setLeAudioCommunicationDevice();
+                    return setLeAudioCommunicationDevice(device);
                 }
 
                 return true;
