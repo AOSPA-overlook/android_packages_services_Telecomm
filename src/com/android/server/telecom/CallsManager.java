@@ -78,6 +78,7 @@ import android.os.UserManager;
 import android.provider.BlockedNumberContract;
 import android.provider.BlockedNumberContract.SystemContract;
 import android.provider.CallLog.Calls;
+import android.provider.DeviceConfig;
 import android.provider.Settings;
 import android.sysprop.TelephonyProperties;
 import android.telecom.CallAttributes;
@@ -292,6 +293,10 @@ public class CallsManager extends Call.ListenerBase
     public static final String EMERGENCY_CALL_DISCONNECTED_BEFORE_BEING_ADDED_ERROR_MSG =
             "An emergency call was disconnected after the connection was created but before the "
                     + "call was successfully added to CallsManager.";
+    public static final UUID EMERGENCY_CALL_ABORTED_NO_PHONE_ACCOUNTS_ERROR_UUID =
+            UUID.fromString("2e994acb-1997-4345-8bf3-bad04303de26");
+    public static final String EMERGENCY_CALL_ABORTED_NO_PHONE_ACCOUNTS_ERROR_MSG =
+            "An emergency call was aborted since there were no available phone accounts.";
 
     private static final int[] OUTGOING_CALL_STATES =
             {CallState.CONNECTING, CallState.SELECT_PHONE_ACCOUNT, CallState.DIALING,
@@ -1987,19 +1992,23 @@ public class CallsManager extends Call.ListenerBase
                                 return CompletableFuture.completedFuture(null);
                             }
                             if (accountSuggestions == null || accountSuggestions.isEmpty()) {
-                                Uri callUri = callToPlace.getHandle();
-                                if (PhoneAccount.SCHEME_TEL.equals(callUri.getScheme())) {
-                                    int managedProfileUserId = getManagedProfileUserId(mContext,
-                                            initiatingUser.getIdentifier());
-                                    if (managedProfileUserId != UserHandle.USER_NULL
-                                            && mPhoneAccountRegistrar.getCallCapablePhoneAccounts(
-                                            handle.getScheme(), false,
-                                            UserHandle.of(managedProfileUserId), false).size()
-                                            != 0) {
-                                        boolean dialogShown = showSwitchToManagedProfileDialog(
-                                                callUri, initiatingUser, managedProfileUserId);
-                                        if (dialogShown) {
-                                            return CompletableFuture.completedFuture(null);
+                                if (isSwitchToManagedProfileDialogFlagEnabled()) {
+                                    Uri callUri = callToPlace.getHandle();
+                                    if (PhoneAccount.SCHEME_TEL.equals(callUri.getScheme())) {
+                                        int managedProfileUserId = getManagedProfileUserId(mContext,
+                                                initiatingUser.getIdentifier());
+                                        if (managedProfileUserId != UserHandle.USER_NULL
+                                                &&
+                                                mPhoneAccountRegistrar.getCallCapablePhoneAccounts(
+                                                        handle.getScheme(), false,
+                                                        UserHandle.of(managedProfileUserId),
+                                                        false).size()
+                                                        != 0) {
+                                            boolean dialogShown = showSwitchToManagedProfileDialog(
+                                                    callUri, initiatingUser, managedProfileUserId);
+                                            if (dialogShown) {
+                                                return CompletableFuture.completedFuture(null);
+                                            }
                                         }
                                     }
                                 }
@@ -2007,6 +2016,12 @@ public class CallsManager extends Call.ListenerBase
                                 Log.i(CallsManager.this, "Aborting call since there are no"
                                         + " available accounts.");
                                 showErrorMessage(R.string.cant_call_due_to_no_supported_service);
+                                mListeners.forEach(l -> l.onCallCreatedButNeverAdded(callToPlace));
+                                if (callToPlace.isEmergencyCall()){
+                                    mAnomalyReporter.reportAnomaly(
+                                            EMERGENCY_CALL_ABORTED_NO_PHONE_ACCOUNTS_ERROR_UUID,
+                                            EMERGENCY_CALL_ABORTED_NO_PHONE_ACCOUNTS_ERROR_MSG);
+                                }
                                 return CompletableFuture.completedFuture(null);
                             }
                             // For adhoc conference calls, if there is only one selectable phone
@@ -2178,6 +2193,11 @@ public class CallsManager extends Call.ListenerBase
             }
         }
         return UserHandle.USER_NULL;
+    }
+
+    private boolean isSwitchToManagedProfileDialogFlagEnabled() {
+        return DeviceConfig.getBoolean(DeviceConfig.NAMESPACE_DEVICE_POLICY_MANAGER,
+                "enable_switch_to_managed_profile_dialog", false);
     }
 
     private boolean showSwitchToManagedProfileDialog(Uri callUri, UserHandle initiatingUser,
