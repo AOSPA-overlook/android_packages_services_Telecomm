@@ -2896,7 +2896,7 @@ public class CallsManager extends Call.ListenerBase
      * @return {@code true} if the speakerphone should be enabled.
      */
     public boolean isSpeakerphoneAutoEnabledForVideoCalls(int videoState) {
-        return /*!isVideoCrbtVoLteCall(videoState) &&*/
+        return !isVideoCrbtVoLteCall(videoState) &&
             VideoProfile.isVideo(videoState) &&
             !mWiredHeadsetManager.isPluggedIn() &&
             !mBluetoothRouteManager.isBluetoothAvailable() &&
@@ -3985,6 +3985,10 @@ public class CallsManager extends Call.ListenerBase
 
     public Call getActiveCall() {
         return getFirstCallWithState(CallState.ACTIVE);
+    }
+
+    private Call getDialingCall() {
+        return getFirstCallWithState(CallState.DIALING);
     }
 
     /** Helper function to retrieve the dialing or pulling call */
@@ -5309,19 +5313,19 @@ public class CallsManager extends Call.ListenerBase
                 new MissedCallNotifier.CallInfoFactory());
     }
 
-    // public boolean isVideoCrbtVoLteCall(int videoState) {
-    //     Call call = getDialingCall();
-    //     if (call == null) {
-    //         return false;
-    //     }
-    //     PhoneAccountHandle accountHandle = call.getTargetPhoneAccount();
-    //     int phoneId = SubscriptionManager.getPhoneId(
-    //             mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(accountHandle));
-    //     return QtiImsExtUtils.isCarrierConfigEnabled(phoneId, mContext,
-    //             "config_enable_video_crbt") && getDialingCall() != null
-    //         && !VideoProfile.isTransmissionEnabled(videoState)
-    //         && VideoProfile.isReceptionEnabled(videoState);
-    // }
+    public boolean isVideoCrbtVoLteCall(int videoState) {
+        Call call = getDialingCall();
+        if (call == null) {
+            return false;
+        }
+        PhoneAccountHandle accountHandle = call.getTargetPhoneAccount();
+        int phoneId = SubscriptionManager.getPhoneId(
+                mPhoneAccountRegistrar.getSubscriptionIdForPhoneAccount(accountHandle));
+        return QtiImsExtUtils.isCarrierConfigEnabled(phoneId, mContext,
+                "config_enable_video_crbt")
+            && !VideoProfile.isTransmissionEnabled(videoState)
+            && VideoProfile.isReceptionEnabled(videoState);
+    }
 
     public boolean isIncomingCallPermitted(PhoneAccountHandle phoneAccountHandle) {
         return isIncomingCallPermitted(null /* excludeCall */, phoneAccountHandle);
