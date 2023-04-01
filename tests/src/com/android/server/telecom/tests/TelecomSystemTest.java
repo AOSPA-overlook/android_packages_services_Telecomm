@@ -89,6 +89,7 @@ import com.android.server.telecom.PhoneAccountRegistrar;
 import com.android.server.telecom.PhoneNumberUtilsAdapterImpl;
 import com.android.server.telecom.ProximitySensorManager;
 import com.android.server.telecom.ProximitySensorManagerFactory;
+import com.android.server.telecom.Ringer;
 import com.android.server.telecom.RoleManagerAdapter;
 import com.android.server.telecom.StatusBarNotifier;
 import com.android.server.telecom.SystemStateHelper;
@@ -112,6 +113,7 @@ import java.util.Collections;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -208,6 +210,8 @@ public class TelecomSystemTest extends TelecomTestCase {
     @Mock RoleManagerAdapter mRoleManagerAdapter;
     @Mock ToneGenerator mToneGenerator;
     @Mock DeviceIdleControllerAdapter mDeviceIdleControllerAdapter;
+
+    @Mock Ringer.AccessibilityManagerAdapter mAccessibilityManagerAdapter;
 
     final ComponentName mInCallServiceComponentNameX =
             new ComponentName(
@@ -509,7 +513,8 @@ public class TelecomSystemTest extends TelecomTestCase {
                             WiredHeadsetManager wiredHeadsetManager,
                             StatusBarNotifier statusBarNotifier,
                             CallAudioManager.AudioServiceFactory audioServiceFactory,
-                            int earpieceControl) {
+                            int earpieceControl,
+                            Executor asyncTaskExecutor) {
                         return new CallAudioRouteStateMachine(context,
                                 callsManager,
                                 bluetoothManager,
@@ -518,7 +523,8 @@ public class TelecomSystemTest extends TelecomTestCase {
                                 audioServiceFactory,
                                 // Force enable an earpiece for the end-to-end tests
                                 CallAudioRouteStateMachine.EARPIECE_FORCE_ENABLED,
-                                mHandlerThread.getLooper());
+                                mHandlerThread.getLooper(),
+                                Runnable::run /* async tasks as now sync for testing! */);
                     }
                 },
                 new CallAudioModeStateMachine.Factory() {
@@ -537,7 +543,8 @@ public class TelecomSystemTest extends TelecomTestCase {
                             ContactsAsyncHelper.ContentResolverAdapter adapter) {
                         return new ContactsAsyncHelper(adapter, mHandlerThread.getLooper());
                     }
-                }, mDeviceIdleControllerAdapter);
+                }, mDeviceIdleControllerAdapter, mAccessibilityManagerAdapter,
+                Runnable::run);
 
         mComponentContextFixture.setTelecomManager(new TelecomManager(
                 mComponentContextFixture.getTestDouble(),
@@ -754,7 +761,7 @@ public class TelecomSystemTest extends TelecomTestCase {
         final UserHandle userHandle = initiatingUser;
         Context localAppContext = mComponentContextFixture.getTestDouble().getApplicationContext();
         new UserCallIntentProcessor(localAppContext, userHandle).processIntent(
-                actionCallIntent, null, true /* hasCallAppOp*/, false /* isLocal */);
+                actionCallIntent, null, false, true /* hasCallAppOp*/, false /* isLocal */);
         // Wait for handler to start CallerInfo lookup.
         waitForHandlerAction(new Handler(Looper.getMainLooper()), TEST_TIMEOUT);
         // Send the CallerInfo lookup reply.

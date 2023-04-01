@@ -87,7 +87,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.Executor;
 
-import static android.companion.virtual.VirtualDeviceManager.DEVICE_ID_DEFAULT;
+import static android.content.Context.DEVICE_ID_DEFAULT;
 
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.matches;
@@ -781,6 +781,10 @@ public class ComponentContextFixture implements TestFixture<Context> {
 
     public TelephonyManager getTelephonyManager() {
         return mTelephonyManager;
+    }
+
+    public AudioManager getAudioManager() {
+        return mAudioManager;
     }
 
     public CarrierConfigManager getCarrierConfigManager() {

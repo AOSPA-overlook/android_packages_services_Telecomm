@@ -29,6 +29,7 @@ import android.os.SystemClock;
 import android.telecom.Log;
 
 import android.telecom.CallerInfoAsyncQuery;
+import android.view.accessibility.AccessibilityManager;
 
 import com.android.internal.telecom.IInternalServiceRetriever;
 import com.android.internal.telecom.ITelecomLoader;
@@ -53,6 +54,7 @@ import com.android.server.telecom.PhoneNumberUtilsAdapterImpl;
 import com.android.server.telecom.ProximitySensorManagerFactory;
 import com.android.server.telecom.InCallWakeLockController;
 import com.android.server.telecom.ProximitySensorManager;
+import com.android.server.telecom.Ringer;
 import com.android.server.telecom.RoleManagerAdapterImpl;
 import com.android.server.telecom.TelecomSystem;
 import com.android.server.telecom.TelecomWakeLock;
@@ -60,6 +62,8 @@ import com.android.server.telecom.Timeouts;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl;
 import com.android.server.telecom.ui.NotificationChannelManager;
+
+import java.util.concurrent.Executors;
 
 /**
  * Implementation of the ITelecom interface.
@@ -191,7 +195,23 @@ public class TelecomService extends Service implements TelecomSystem.Component {
                             new RoleManagerAdapterImpl(context,
                                     (RoleManager) context.getSystemService(Context.ROLE_SERVICE)),
                             new ContactsAsyncHelper.Factory(),
-                            internalServiceRetriever.getDeviceIdleController()));
+                            internalServiceRetriever.getDeviceIdleController(),
+                            new Ringer.AccessibilityManagerAdapter() {
+                                @Override
+                                public boolean startFlashNotificationSequence(
+                                        @androidx.annotation.NonNull Context context, int reason) {
+                                    return context.getSystemService(AccessibilityManager.class)
+                                            .startFlashNotificationSequence(context, reason);
+                                }
+
+                                @Override
+                                public boolean stopFlashNotificationSequence(
+                                        @androidx.annotation.NonNull Context context) {
+                                    return context.getSystemService(AccessibilityManager.class)
+                                            .stopFlashNotificationSequence(context);
+                                }
+                            },
+                            Executors.newSingleThreadExecutor()));
         }
     }
 
