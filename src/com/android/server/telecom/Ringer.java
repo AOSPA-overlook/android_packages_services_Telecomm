@@ -32,6 +32,7 @@ import android.content.IntentFilter;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.media.HwAudioSource;
 import android.media.Ringtone;
 import android.media.VolumeShaper;
 import android.net.Uri;
@@ -180,6 +181,8 @@ public class Ringer {
     private AudioManager mAudioManager;
     private NotificationManager mNotificationManager;
     private AccessibilityManagerAdapter mAccessibilityManagerAdapter;
+    private HwAudioSource mCrsRingtonePlayer;
+    private boolean mIsCrsCall = false;
 
     /**
      * Call objects that are ringing, vibrating or call-waiting. These are used only for logging
@@ -232,6 +235,7 @@ public class Ringer {
         mNotificationManager = notificationManager;
         mAudioManager = mContext.getSystemService(AudioManager.class);
         mAccessibilityManagerAdapter = accessibilityManagerAdapter;
+        mCrsRingtonePlayer = createCrsRingtonePlayer(context);
 
         if (mContext.getResources().getBoolean(R.bool.use_simple_vibration_pattern)) {
             mDefaultVibrationEffect = mVibrationEffectProxy.createWaveform(SIMPLE_VIBRATION_PATTERN,
@@ -243,8 +247,6 @@ public class Ringer {
 
         mIsHapticPlaybackSupportedByDevice =
                 mSystemSettingsUtil.isHapticPlaybackSupported(mContext);
-
-        mAudioManager = mContext.getSystemService(AudioManager.class);
     }
 
     @VisibleForTesting
@@ -255,6 +257,15 @@ public class Ringer {
     @VisibleForTesting
     public void setNotificationManager(NotificationManager notificationManager) {
         mNotificationManager = notificationManager;
+    }
+
+    public boolean isCrsSupportedFromAudioHal() {
+        if (mAudioManager == null) {
+            return false;
+        }
+        String isCrsSupported = mAudioManager.getParameters("isCRSsupported");
+        Log.i(this, "CRS is supported from audio HAL : " + isCrsSupported);
+        return isCrsSupported.equals("isCRSsupported=1");
     }
 
     public boolean startPlayingCrs(Call foregroundCall, boolean isHfpDeviceAttached) {
@@ -467,6 +478,38 @@ public class Ringer {
         return crsVolume;
     }
 
+    /**
+     * Get the {@link AudioDeviceInfo} instance with {@link AudioDeviceInfo#TYPE_TELEPHONY}
+     * returns the first found one.
+     */
+    private AudioDeviceInfo findTelephonyRxDevice(Context context) {
+        if (!isCrsSupportedFromAudioHal()) {
+            return null;
+        }
+        Log.i(this, "findTelephonyRxDevice start");
+        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
+        AudioDeviceInfo[] devices = am.getDevices(AudioManager.GET_DEVICES_INPUTS);
+        for (AudioDeviceInfo device : devices) {
+            if (device.getType() == AudioDeviceInfo.TYPE_TELEPHONY && device.isSource()) {
+                Log.i(this, "findTelephonyRxDevice found device.");
+                return device;
+            }
+        }
+        Log.i(this, "findTelephonyRxDevice is null");
+        return null;
+    }
+
+    private HwAudioSource createCrsRingtonePlayer(Context context) {
+        Log.i(this, "createCrsRingtonePlayer start :: ");
+        AudioDeviceInfo rxDevice = findTelephonyRxDevice(context);
+        return (rxDevice != null) ? new HwAudioSource.Builder()
+            .setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .build())
+            .setAudioDeviceInfo(rxDevice)
+            .build() : null;
+    }
+
     public boolean startRinging(Call foregroundCall, boolean isHfpDeviceAttached) {
         if (foregroundCall == null) {
             Log.wtf(this, "startRinging called with null foreground call.");
@@ -526,6 +569,7 @@ public class Ringer {
             return acquireAudioFocus;
         }
 
+        mIsCrsCall = foregroundCall.isCrsCall();
         stopCallWaiting();
 
         final boolean shouldFlash = attributes.shouldRingForContact();
@@ -630,7 +674,7 @@ public class Ringer {
             vibrationEffect = mDefaultVibrationEffect;
         }
 
-        if (ringtone == null) {
+        if (!mIsCrsCall && ringtone == null) {
             Log.w(this, "No ringtone was found bail out from playing.");
             // No ringtone was found, try as a last resort to check if vibration can be performed.
             vibrateIfNeeded(/* isUsingAudioCoupledHaptics */ false, attributes, foregroundCall,
@@ -643,8 +687,18 @@ public class Ringer {
 
         boolean isUsingAudioCoupledHaptics = !hapticChannelsMuted && ringtone.hasHapticChannels();
 
+        if (!mIsCrsCall) {
         // There is a ringtone and we want to play it.
-        mRingtonePlayer.play(ringtone);
+            mRingtonePlayer.play(ringtone);
+        } else if(mCrsRingtonePlayer != null) {
+            //So far CRS has no haptics channel
+            Log.i(this, "Play CRS in RING Mode");
+            mAudioManager.setParameters("CRS_volume=" +
+                    mAudioManager.getStreamVolume(AudioManager.STREAM_RING));
+            mCrsRingtonePlayer.start();
+        } else {
+            Log.w(this, "CrsRingtonePlayer is null");
+        }
 
         vibrateIfNeeded(isUsingAudioCoupledHaptics, attributes, foregroundCall, vibrationEffect,
             isVibratorEnabled);
@@ -791,7 +845,14 @@ public class Ringer {
                 mRingingCall = null;
             }
 
-            mRingtonePlayer.stop();
+            if (mIsCrsCall && mCrsRingtonePlayer != null) {
+                Log.i(this, "Stop CRS ");
+                mCrsRingtonePlayer.stop();
+                mIsCrsCall = false;
+            } else if (mRingtonePlayer.isPlaying()){
+                Log.i(this, "Stop local Ringing");
+                mRingtonePlayer.stop();
+            }
 
             if (mIsVibrating) {
                 Log.addEvent(mVibratingCall, LogUtils.Events.STOP_VIBRATOR);
@@ -816,7 +877,8 @@ public class Ringer {
     }
 
     public boolean isRinging() {
-        return mRingtonePlayer.isPlaying();
+        return mRingtonePlayer.isPlaying() ||
+            (mCrsRingtonePlayer != null && mCrsRingtonePlayer.isPlaying());
     }
 
     /**
