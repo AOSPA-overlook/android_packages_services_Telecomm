@@ -58,6 +58,7 @@ import android.os.Process;
 import android.os.ResultReceiver;
 import android.os.SystemClock;
 import android.os.UserHandle;
+import android.provider.BlockedNumberContract;
 import android.telecom.CallerInfo;
 import android.telecom.CallScreeningService;
 import android.telecom.Connection;
@@ -68,6 +69,7 @@ import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 import android.telecom.CallException;
 import android.telecom.VideoProfile;
+import android.telephony.CarrierConfigManager;
 import android.telephony.TelephonyManager;
 import android.test.suitebuilder.annotation.MediumTest;
 import android.test.suitebuilder.annotation.SmallTest;
@@ -115,6 +117,7 @@ import com.android.server.telecom.WiredHeadsetManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
+import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.ToastFactory;
@@ -135,10 +138,8 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.Executor;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
@@ -237,6 +238,7 @@ public class CallsManagerTest extends TelecomTestCase {
     @Mock private CallAnomalyWatchdog mCallAnomalyWatchdog;
     @Mock private AnomalyReporterAdapter mAnomalyReporterAdapter;
     @Mock private Ringer.AccessibilityManagerAdapter mAccessibilityManagerAdapter;
+    @Mock private BlockedNumbersAdapter mBlockedNumbersAdapter;
 
     private CallsManager mCallsManager;
 
@@ -301,7 +303,8 @@ public class CallsManagerTest extends TelecomTestCase {
                 mCallAnomalyWatchdog,
                 mAccessibilityManagerAdapter,
                 // Just do async tasks synchronously to support testing.
-                command -> command.run());
+                command -> command.run(),
+                mBlockedNumbersAdapter);
 
         when(mPhoneAccountRegistrar.getPhoneAccount(
                 eq(SELF_MANAGED_HANDLE), any())).thenReturn(SELF_MANAGED_ACCOUNT);
@@ -2016,13 +2019,13 @@ public class CallsManagerTest extends TelecomTestCase {
         incomingCall.handleCreateConnectionFailure(new DisconnectCause(DisconnectCause.CANCELED));
 
         //Ensure the listener is notified properly:
-        verify(listener).onCallCreatedButNeverAdded(incomingCall);
+        verify(listener).onCreateConnectionFailed(incomingCall);
     }
 
     /**
      * Emulate the case where a new incoming call is created but the connection fails for a known
      * reason after being added to CallsManager. Since the call was added to CallsManager, the
-     * listeners should not be notified via onCallCreatedButNeverAdded().
+     * listeners should not be notified via onCreateConnectionFailed().
      */
     @Test
     public void testIncomingCallCreatedAndAddedDoNotNotifyListener() {
@@ -2037,8 +2040,8 @@ public class CallsManagerTest extends TelecomTestCase {
         //The connection fails after being added to CallsManager for a known reason:
         incomingCall.handleCreateConnectionFailure(new DisconnectCause(DisconnectCause.CANCELED));
 
-        //Since the call was added to CallsManager, onCallCreatedButNeverAdded shouldn't be invoked:
-        verify(listener, never()).onCallCreatedButNeverAdded(incomingCall);
+        //Since the call was added to CallsManager, onCreateConnectionFailed shouldn't be invoked:
+        verify(listener, never()).onCreateConnectionFailed(incomingCall);
     }
 
     /**
@@ -2069,7 +2072,7 @@ public class CallsManagerTest extends TelecomTestCase {
         Call result = callFuture.get(TEST_TIMEOUT, TimeUnit.MILLISECONDS);
 
         //Ensure the listener is notified properly:
-        verify(listener).onCallCreatedButNeverAdded(any());
+        verify(listener).onCreateConnectionFailed(any());
         assertNull(result);
     }
 
@@ -2708,6 +2711,61 @@ public class CallsManagerTest extends TelecomTestCase {
         Call selfManagedCall = addSpyCall();
         when(selfManagedCall.isSelfManaged()).thenReturn(true);
         assertTrue(mCallsManager.hasSelfManagedCalls());
+    }
+
+    /**
+     * Verifies when {@link CallsManager} receives a carrier config change it will trigger an
+     * update of the emergency call notification.
+     * Note: this test mocks out {@link BlockedNumbersAdapter} so does not actually test posting of
+     * the notification.  Notification posting in the actual implementation is covered by
+     * {@link BlockedNumbersUtilTests}.
+     */
+    @SmallTest
+    @Test
+    public void testUpdateEmergencyCallNotificationOnCarrierConfigChange() {
+        when(mBlockedNumbersAdapter.shouldShowEmergencyCallNotification(any(Context.class)))
+                .thenReturn(true);
+        mComponentContextFixture.getBroadcastReceivers().forEach(c -> c.onReceive(mContext,
+                new Intent(CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED)));
+        verify(mBlockedNumbersAdapter).updateEmergencyCallNotification(any(Context.class),
+                eq(true));
+
+        when(mBlockedNumbersAdapter.shouldShowEmergencyCallNotification(any(Context.class)))
+                .thenReturn(false);
+        mComponentContextFixture.getBroadcastReceivers().forEach(c -> c.onReceive(mContext,
+                new Intent(CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED)));
+        verify(mBlockedNumbersAdapter).updateEmergencyCallNotification(any(Context.class),
+                eq(false));
+    }
+
+    /**
+     * Verifies when {@link CallsManager} receives a signal from the blocked number provider that
+     * the call blocking enabled state changes, it will trigger an update of the emergency call
+     * notification.
+     * Note: this test mocks out {@link BlockedNumbersAdapter} so does not actually test posting of
+     * the notification.  Notification posting in the actual implementation is covered by
+     * {@link BlockedNumbersUtilTests}.
+     */
+    @SmallTest
+    @Test
+    public void testUpdateEmergencyCallNotificationOnNotificationVisibilityChange() {
+        when(mBlockedNumbersAdapter.shouldShowEmergencyCallNotification(any(Context.class)))
+                .thenReturn(true);
+        mComponentContextFixture.getBroadcastReceivers().forEach(c -> c.onReceive(mContext,
+                new Intent(
+                        BlockedNumberContract.SystemContract
+                                .ACTION_BLOCK_SUPPRESSION_STATE_CHANGED)));
+        verify(mBlockedNumbersAdapter).updateEmergencyCallNotification(any(Context.class),
+                eq(true));
+
+        when(mBlockedNumbersAdapter.shouldShowEmergencyCallNotification(any(Context.class)))
+                .thenReturn(false);
+        mComponentContextFixture.getBroadcastReceivers().forEach(c -> c.onReceive(mContext,
+                new Intent(
+                        BlockedNumberContract.SystemContract
+                                .ACTION_BLOCK_SUPPRESSION_STATE_CHANGED)));
+        verify(mBlockedNumbersAdapter).updateEmergencyCallNotification(any(Context.class),
+                eq(false));
     }
 
     private Call addSpyCall() {
