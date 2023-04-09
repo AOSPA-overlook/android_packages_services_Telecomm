@@ -569,6 +569,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     private boolean mIsSelfManaged = false;
 
     private boolean mIsTransactionalCall = false;
+    private int mOwnerPid = -1;
 
     /**
      * Indicates whether this call is streaming.
@@ -1856,6 +1857,14 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
         // Connection properties will add/remove the PROPERTY_SELF_MANAGED.
         setConnectionProperties(getConnectionProperties());
+    }
+
+    public void setOwnerPid(int pid) {
+        mOwnerPid = pid;
+    }
+
+    public int getOwnerPid() {
+        return mOwnerPid;
     }
 
     public void setTransactionServiceWrapper(TransactionalServiceWrapper service) {
@@ -3964,6 +3973,10 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     public boolean isUnknown() {
         return mCallDirection == CALL_DIRECTION_UNKNOWN;
+    }
+
+    public boolean isOutgoing() {
+        return mCallDirection == CALL_DIRECTION_OUTGOING;
     }
 
     /**

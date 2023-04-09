@@ -26,11 +26,14 @@ import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import android.os.BugreportManager;
+import android.os.DropBoxManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.AnomalyReporter;
+import android.telephony.TelephonyManager;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -49,6 +52,7 @@ import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
 import com.android.server.telecom.ui.ToastFactory;
+import com.android.server.telecom.voip.TransactionManager;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
@@ -216,6 +220,7 @@ public class TelecomSystem {
             BlockedNumbersAdapter blockedNumbersAdapter) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
+        android.telecom.Log.setLock(mLock);
         AnomalyReporter.initialize(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
                 new DefaultDialerCache.DefaultDialerManagerAdapterImpl();
@@ -334,10 +339,17 @@ public class TelecomSystem {
                 }
             };
 
+            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger =
+                    new EmergencyCallDiagnosticLogger(mContext.getSystemService(
+                            TelephonyManager.class), mContext.getSystemService(
+                            BugreportManager.class), timeoutsAdapter, mContext.getSystemService(
+                            DropBoxManager.class), asyncTaskExecutor, clockProxy);
+
             CallAnomalyWatchdog callAnomalyWatchdog = new CallAnomalyWatchdog(
                     Executors.newSingleThreadScheduledExecutor(),
-                    mLock, timeoutsAdapter, clockProxy);
+                    mLock, timeoutsAdapter, clockProxy, emergencyCallDiagnosticLogger);
 
+            TransactionManager transactionManager = TransactionManager.getInstance();
             mCallsManager = new CallsManager(
                     mContext,
                     mLock,
@@ -372,7 +384,9 @@ public class TelecomSystem {
                     callAnomalyWatchdog,
                     accessibilityManagerAdapter,
                     asyncTaskExecutor,
-                    blockedNumbersAdapter);
+                    blockedNumbersAdapter,
+                    transactionManager,
+                    emergencyCallDiagnosticLogger);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
