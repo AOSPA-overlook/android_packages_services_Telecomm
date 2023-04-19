@@ -4279,9 +4279,19 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         if ((oldState == CallState.DIALING && newState == CallState.ACTIVE)
                 || (oldState == CallState.RINGING && newState == CallState.ANSWERED)) {
             mVideoStateHistory = mVideoState;
+
+            // Video state is video type when answering Video CRS for VoLTE call
+            if (isVideoCrsForVoLteCall()) {
+                mVideoStateHistory = VideoProfile.STATE_AUDIO_ONLY;
+                return;
+            }
         }
 
         mVideoStateHistory |= mVideoState;
+    }
+
+    public boolean isVideoCrsForVoLteCall() {
+        return isCrsCall() && getOriginalCallType() == VideoProfile.STATE_AUDIO_ONLY;
     }
 
     /**

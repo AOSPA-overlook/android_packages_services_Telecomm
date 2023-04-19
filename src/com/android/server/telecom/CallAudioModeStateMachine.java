@@ -556,6 +556,8 @@ public class CallAudioModeStateMachine extends StateMachine {
                     return HANDLED;
                 case RINGING_CALLS_CHANGED:
                     Log.i(LOG_TAG, "CRS RINGING state, received RINGING_CALLS_CHANGED");
+                    //Ringing call changed, so stop current ring first.
+                    mCallAudioManager.stopRinging();
                     BaseState newDestState = calculateProperStateFromArgs(args);
                     transitionTo(newDestState);
                     return HANDLED;
@@ -670,6 +672,8 @@ public class CallAudioModeStateMachine extends StateMachine {
                     return HANDLED;
                 case RINGING_CALLS_CHANGED:
                     Log.i(LOG_TAG, "RINGING state, received RINGING_CALLS_CHANGED");
+                    //Ringing call changed, so stop current ring first.
+                    mCallAudioManager.stopRinging();
                     BaseState newDestState = calculateProperStateFromArgs(args);
                     transitionTo(newDestState);
                     return HANDLED;
