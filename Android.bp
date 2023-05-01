@@ -23,6 +23,7 @@ android_app {
     name: "Telecom",
     libs: [
       "ims-ext-common",
+      "services",
     ],
     uses_libs: [
       "ims-ext-common",

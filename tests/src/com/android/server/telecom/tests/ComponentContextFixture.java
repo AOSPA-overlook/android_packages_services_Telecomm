@@ -55,9 +55,13 @@ import android.location.CountryDetector;
 import android.location.LocationManager;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
+import android.os.BugreportManager;
 import android.os.Bundle;
+import android.os.DropBoxManager;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.IInterface;
+import android.os.Looper;
 import android.os.PersistableBundle;
 import android.os.Process;
 import android.os.UserHandle;
@@ -110,6 +114,7 @@ import static org.mockito.Mockito.when;
  * property points to an application context implementing all the nontrivial functionality.
  */
 public class ComponentContextFixture implements TestFixture<Context> {
+    private HandlerThread mHandlerThread;
 
     public class FakeApplicationContext extends MockContext {
         @Override
@@ -275,8 +280,12 @@ public class ComponentContextFixture implements TestFixture<Context> {
                 return Context.NOTIFICATION_SERVICE;
             } else if (svcClass == AccessibilityManager.class) {
                 return Context.ACCESSIBILITY_SERVICE;
+            } else if (svcClass == DropBoxManager.class) {
+                return Context.DROPBOX_SERVICE;
+            } else if (svcClass == BugreportManager.class) {
+                return Context.BUGREPORT_SERVICE;
             }
-            throw new UnsupportedOperationException();
+            throw new UnsupportedOperationException(svcClass.getName());
         }
 
         @Override
@@ -302,6 +311,15 @@ public class ComponentContextFixture implements TestFixture<Context> {
         @Override
         public AttributionSource getAttributionSource() {
             return mAttributionSource;
+        }
+
+        @Override
+        public Looper getMainLooper() {
+            if (mHandlerThread == null) {
+                mHandlerThread = new HandlerThread(this.getClass().getSimpleName());
+                mHandlerThread.start();
+            }
+            return mHandlerThread.getLooper();
         }
 
         @Override
@@ -344,30 +362,34 @@ public class ComponentContextFixture implements TestFixture<Context> {
 
         @Override
         public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter) {
-            // TODO -- this is called by WiredHeadsetManager!!!
+            mBroadcastReceivers.add(receiver);
             return null;
         }
 
         @Override
         public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter, int flags) {
+            mBroadcastReceivers.add(receiver);
             return null;
         }
 
         @Override
         public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter,
                 String broadcastPermission, Handler scheduler) {
+            mBroadcastReceivers.add(receiver);
             return null;
         }
 
         @Override
         public Intent registerReceiver(BroadcastReceiver receiver, IntentFilter filter,
                 String broadcastPermission, Handler scheduler, int flags) {
+            mBroadcastReceivers.add(receiver);
             return null;
         }
 
         @Override
         public Intent registerReceiverAsUser(BroadcastReceiver receiver, UserHandle handle,
                 IntentFilter filter, String broadcastPermission, Handler scheduler) {
+            mBroadcastReceivers.add(receiver);
             return null;
         }
 
@@ -591,6 +613,7 @@ public class ComponentContextFixture implements TestFixture<Context> {
             mock(PermissionCheckerManager.class);
     private final PermissionInfo mPermissionInfo = mock(PermissionInfo.class);
     private final SensorPrivacyManager mSensorPrivacyManager = mock(SensorPrivacyManager.class);
+    private final List<BroadcastReceiver> mBroadcastReceivers = new ArrayList<>();
 
     private TelecomManager mTelecomManager = mock(TelecomManager.class);
 
@@ -793,6 +816,10 @@ public class ComponentContextFixture implements TestFixture<Context> {
 
     public NotificationManager getNotificationManager() {
         return mNotificationManager;
+    }
+
+    public List<BroadcastReceiver> getBroadcastReceivers() {
+        return mBroadcastReceivers;
     }
 
     private void addService(String action, ComponentName name, IInterface service) {

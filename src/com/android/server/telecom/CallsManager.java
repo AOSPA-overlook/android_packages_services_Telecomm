@@ -60,8 +60,6 @@ import android.media.AudioSystem;
 import android.media.MediaPlayer;
 import android.media.ToneGenerator;
 import android.net.Uri;
-import android.os.AsyncTask;
-import android.os.Binder;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -102,6 +100,7 @@ import android.telecom.PhoneAccountSuggestion;
 import android.telecom.TelecomManager;
 import android.telecom.VideoProfile;
 import android.telephony.CarrierConfigManager;
+import android.telephony.CellIdentity;
 import android.telephony.PhoneNumberUtils;
 import android.telephony.SubscriptionManager;
 import android.telephony.TelephonyManager;
@@ -110,7 +109,6 @@ import android.util.Pair;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.WindowManager;
-import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 
 import com.android.internal.annotations.VisibleForTesting;
@@ -119,6 +117,7 @@ import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
 import com.android.server.telecom.callfiltering.BlockCheckerAdapter;
 import com.android.server.telecom.callfiltering.BlockCheckerFilter;
+import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
 import com.android.server.telecom.callfiltering.CallFilterResultCallback;
 import com.android.server.telecom.callfiltering.CallFilteringResult;
 import com.android.server.telecom.callfiltering.CallFilteringResult.Builder;
@@ -129,7 +128,6 @@ import com.android.server.telecom.callfiltering.IncomingCallFilterGraph;
 import com.android.server.telecom.callredirection.CallRedirectionProcessor;
 import com.android.server.telecom.components.ErrorDialogActivity;
 import com.android.server.telecom.components.TelecomBroadcastReceiver;
-import com.android.server.telecom.settings.BlockedNumbersUtil;
 import com.android.server.telecom.stats.CallFailureCause;
 import com.android.server.telecom.ui.AudioProcessingNotification;
 import com.android.server.telecom.ui.CallRedirectionTimeoutDialogActivity;
@@ -137,6 +135,8 @@ import com.android.server.telecom.ui.ConfirmCallDialogActivity;
 import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.ToastFactory;
+import com.android.server.telecom.voip.TransactionManager;
+import com.android.server.telecom.voip.VoipCallMonitor;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -180,14 +180,13 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public interface CallsManagerListener {
         /**
-         * Informs listeners when a {@link Call} is newly created but not yet added to
-         * {@link #mCalls}.  This is where the call has not yet been created by the underlying
-         * {@link ConnectionService}.
+         * Informs listeners when a {@link Call} is newly created, but not yet returned by a
+         * {@link android.telecom.ConnectionService} implementation.
          * @param call the call.
          */
-        default void onCallCreated(Call call) {}
+        default void onStartCreateConnection(Call call) {}
         void onCallAdded(Call call);
-        void onCallCreatedButNeverAdded(Call call);
+        void onCreateConnectionFailed(Call call);
         void onCallRemoved(Call call);
         void onCallStateChanged(Call call, int oldState, int newState);
         void onConnectionServiceChanged(
@@ -445,9 +444,14 @@ public class CallsManager extends Call.ListenerBase
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private final EmergencyCallHelper mEmergencyCallHelper;
     private final RoleManagerAdapter mRoleManagerAdapter;
+    private final VoipCallMonitor mVoipCallMonitor;
     private final CallEndpointController mCallEndpointController;
     private final CallAnomalyWatchdog mCallAnomalyWatchdog;
+
+    private final EmergencyCallDiagnosticLogger mEmergencyCallDiagnosticLogger;
     private final CallStreamingController mCallStreamingController;
+    private final BlockedNumbersAdapter mBlockedNumbersAdapter;
+    private final TransactionManager mTransactionManager;
 
     private final ConnectionServiceFocusManager.CallsManagerRequester mRequester =
             new ConnectionServiceFocusManager.CallsManagerRequester() {
@@ -524,35 +528,15 @@ public class CallsManager extends Call.ListenerBase
     private final BroadcastReceiver mReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            Log.startSession("CM.CCCR");
             String action = intent.getAction();
             if (CarrierConfigManager.ACTION_CARRIER_CONFIG_CHANGED.equals(action)
                     || SystemContract.ACTION_BLOCK_SUPPRESSION_STATE_CHANGED.equals(action)) {
-                new UpdateEmergencyCallNotificationTask().doInBackground(
-                        Pair.create(context, Log.createSubsession()));
+                updateEmergencyCallNotificationAsync(context);
             } else if (ACTION_MSIM_VOICE_CAPABILITY_CHANGED.equals(action)) {
                 updateCanAddCall();
             }
         }
     };
-
-    private static class UpdateEmergencyCallNotificationTask
-            extends AsyncTask<Pair<Context, Session>, Void, Void> {
-        @SafeVarargs
-        @Override
-        protected final Void doInBackground(Pair<Context, Session>... args) {
-            if (args == null || args.length != 1 || args[0] == null) {
-                Log.e(this, new IllegalArgumentException(), "Incorrect invocation");
-                return null;
-            }
-            Log.continueSession(args[0].second, "CM.UECNT");
-            Context context = args[0].first;
-            BlockedNumbersUtil.updateEmergencyCallNotification(context,
-                    SystemContract.shouldShowEmergencyCallNotification(context));
-            Log.endSession();
-            return null;
-        }
-    }
 
     /**
      * Initializes the required Telecom components.
@@ -592,7 +576,11 @@ public class CallsManager extends Call.ListenerBase
             CallEndpointControllerFactory callEndpointControllerFactory,
             CallAnomalyWatchdog callAnomalyWatchdog,
             Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
-            Executor asyncTaskExecutor) {
+            Executor asyncTaskExecutor,
+            BlockedNumbersAdapter blockedNumbersAdapter,
+            TransactionManager transactionManager,
+            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger) {
+
         mContext = context;
         mLock = lock;
         mPhoneNumberUtilsAdapter = phoneNumberUtilsAdapter;
@@ -609,6 +597,7 @@ public class CallsManager extends Call.ListenerBase
         mTimeoutsAdapter = timeoutsAdapter;
         mEmergencyCallHelper = emergencyCallHelper;
         mCallerInfoLookupHelper = callerInfoLookupHelper;
+        mEmergencyCallDiagnosticLogger = emergencyCallDiagnosticLogger;
 
         mDtmfLocalTonePlayer =
                 new DtmfLocalTonePlayer(new DtmfLocalTonePlayer.ToneGeneratorProxy());
@@ -675,7 +664,10 @@ public class CallsManager extends Call.ListenerBase
         mClockProxy = clockProxy;
         mToastFactory = toastFactory;
         mRoleManagerAdapter = roleManagerAdapter;
-        mCallStreamingController = new CallStreamingController(mContext);
+        mTransactionManager = transactionManager;
+        mBlockedNumbersAdapter = blockedNumbersAdapter;
+        mCallStreamingController = new CallStreamingController(mContext, mLock);
+        mVoipCallMonitor = new VoipCallMonitor(mContext, mLock);
 
         mListeners.add(mInCallWakeLockController);
         mListeners.add(statusBarNotifier);
@@ -691,10 +683,14 @@ public class CallsManager extends Call.ListenerBase
         mListeners.add(mProximitySensorManager);
         mListeners.add(audioProcessingNotification);
         mListeners.add(callAnomalyWatchdog);
+        mListeners.add(mEmergencyCallDiagnosticLogger);
         mListeners.add(mCallStreamingController);
 
         // this needs to be after the mCallAudioManager
         mListeners.add(mPhoneStateBroadcaster);
+        mListeners.add(mVoipCallMonitor);
+
+        mVoipCallMonitor.startMonitor();
 
         // There is no USER_SWITCHED broadcast for user 0, handle it here explicitly.
         final UserManager userManager = UserManager.get(mContext);
@@ -895,6 +891,9 @@ public class CallsManager extends Call.ListenerBase
             Log.i(this, "onCallFilteringCompleted: call already disconnected.");
             return;
         }
+
+        // Store the shouldSuppress value in the call object which will be passed to InCallServices
+        incomingCall.setCallIsSuppressedByDoNotDisturb(result.shouldSuppressCallDueToDndStatus);
 
         // Inform our connection service that call filtering is done (if it was performed at all).
         if (incomingCall.isUsingCallFiltering()) {
@@ -1344,6 +1343,10 @@ public class CallsManager extends Call.ListenerBase
         return mEmergencyCallHelper;
     }
 
+    EmergencyCallDiagnosticLogger getEmergencyCallDiagnosticLogger() {
+        return mEmergencyCallDiagnosticLogger;
+    }
+
     public DefaultDialerCache getDefaultDialerCache() {
         return mDefaultDialerCache;
     }
@@ -1453,11 +1456,12 @@ public class CallsManager extends Call.ListenerBase
                 isConference, /* isConference */
                 mClockProxy,
                 mToastFactory);
-        notifyCallCreated(call);
 
         // set properties for transactional call
         if (extras.containsKey(TelecomManager.TRANSACTION_CALL_ID_KEY)) {
             call.setIsTransactionalCall(true);
+            call.setOwnerPid(extras.getInt(CallAttributes.CALLER_PID, -1));
+            extras.remove(CallAttributes.CALLER_PID);
             call.setConnectionCapabilities(
                     extras.getInt(CallAttributes.CALL_CAPABILITIES_KEY,
                             CallAttributes.SUPPORTS_SET_INACTIVE), true);
@@ -1621,6 +1625,7 @@ public class CallsManager extends Call.ListenerBase
             call.setIsCreateConnectionComplete(true);
             addCall(call);
         } else {
+            notifyStartCreateConnection(call);
             call.startCreateConnection(mPhoneAccountRegistrar);
         }
         return call;
@@ -1647,12 +1652,11 @@ public class CallsManager extends Call.ListenerBase
                 false, /* isConference */
                 mClockProxy,
                 mToastFactory);
-        notifyCallCreated(call);
-
         call.initAnalytics();
 
         setIntentExtrasAndStartTime(call, extras);
         call.addListener(this);
+        notifyStartCreateConnection(call);
         call.startCreateConnection(mPhoneAccountRegistrar);
     }
 
@@ -1768,6 +1772,8 @@ public class CallsManager extends Call.ListenerBase
 
             if (extras.containsKey(TelecomManager.TRANSACTION_CALL_ID_KEY)) {
                 call.setIsTransactionalCall(true);
+                call.setOwnerPid(extras.getInt(CallAttributes.CALLER_PID, -1));
+                extras.remove(CallAttributes.CALLER_PID);
                 call.setConnectionCapabilities(
                         extras.getInt(CallAttributes.CALL_CAPABILITIES_KEY,
                                 CallAttributes.SUPPORTS_SET_INACTIVE), true);
@@ -1775,8 +1781,23 @@ public class CallsManager extends Call.ListenerBase
             }
 
             call.initAnalytics(callingPackage, creationLogs.toString());
-            // Let listeners know that we just created a new call but haven't added it yet.
-            notifyCallCreated(call);
+
+            // Log info for emergency call
+            if (call.isEmergencyCall()) {
+                String simNumeric = "";
+                String networkNumeric = "";
+                int defaultVoiceSubId = SubscriptionManager.getDefaultVoiceSubscriptionId();
+                if (defaultVoiceSubId != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                    TelephonyManager tm = getTelephonyManager().createForSubscriptionId(
+                            defaultVoiceSubId);
+                    CellIdentity cellIdentity = tm.getLastKnownCellIdentity();
+                    simNumeric = tm.getSimOperatorNumeric();
+                    networkNumeric = (cellIdentity != null) ? cellIdentity.getPlmn() : "";
+                }
+                TelecomStatsLog.write(TelecomStatsLog.EMERGENCY_NUMBER_DIALED,
+                            handle.getSchemeSpecificPart(),
+                            callingPackage, simNumeric, networkNumeric);
+            }
 
             // Ensure new calls related to self-managed calls/connections are set as such.  This
             // will be overridden when the actual connection is returned in startCreateConnection,
@@ -2016,7 +2037,7 @@ public class CallsManager extends Call.ListenerBase
                                 Log.i(CallsManager.this, "Aborting call since there are no"
                                         + " available accounts.");
                                 showErrorMessage(R.string.cant_call_due_to_no_supported_service);
-                                mListeners.forEach(l -> l.onCallCreatedButNeverAdded(callToPlace));
+                                mListeners.forEach(l -> l.onCreateConnectionFailed(callToPlace));
                                 if (callToPlace.isEmergencyCall()){
                                     mAnomalyReporter.reportAnomaly(
                                             EMERGENCY_CALL_ABORTED_NO_PHONE_ACCOUNTS_ERROR_UUID,
@@ -2752,6 +2773,7 @@ public class CallsManager extends Call.ListenerBase
                     disconnectSelfManagedCalls("place emerg call" /* reason */);
                 }
                 try {
+                    notifyStartCreateConnection(call);
                     call.startCreateConnection(mPhoneAccountRegistrar);
                 } catch (Exception exception) {
                     // If an exceptions is thrown while creating the connection, prompt the user to
@@ -3316,7 +3338,10 @@ public class CallsManager extends Call.ListenerBase
 
         // Only one SIM PhoneAccount can be active at one time for DSDS. Only that SIM PhoneAccount
         // should be available if a call is already active on the SIM account.
-        if (!isDsdaOrDsdsTransitionMode()) {
+        // Similarly, the emergency call should be attempted over the same PhoneAccount as the
+        // ongoing call. However, if the ongoing call is over cross-SIM registration, then the
+        // emergency call will be attempted over a different Phone object at a later stage.
+        if (isEmergency || !isDsdaOrDsdsTransitionMode()) {
             List<PhoneAccountHandle> simAccounts =
                     mPhoneAccountRegistrar.getSimPhoneAccountsOfCurrentUser();
             PhoneAccountHandle ongoingCallAccount = null;
@@ -3549,8 +3574,18 @@ public class CallsManager extends Call.ListenerBase
                 return false;
             }
             if (canHold(activeCall)) {
-                activeCall.hold();
-                return true;
+                // When Pseudo DSDA call is answered via BT, there is a limitation that we will try
+                // to put the call on hold first before disconnecting, below condiiton is added to
+                // stop the additional HOLD at Telecom.
+                // If there are no call extras present, we need to follow base behavior and allow
+                // the HOLD request, if extras are present however we need to allow only for
+                // non Pseudo DSDA cases.
+                if (call.getExtras() == null ||
+                        !call.getExtras().getBoolean(Connection.EXTRA_ANSWERING_DROPS_FG_CALL)) {
+                    activeCall.hold();
+                    return true;
+                }
+                return false;
             } else if (supportsHold(activeCall)
                     && areFromSameSource(activeCall, call)) {
 
@@ -3719,7 +3754,7 @@ public class CallsManager extends Call.ListenerBase
                         EMERGENCY_CALL_DISCONNECTED_BEFORE_BEING_ADDED_ERROR_UUID,
                         EMERGENCY_CALL_DISCONNECTED_BEFORE_BEING_ADDED_ERROR_MSG);
             }
-            mListeners.forEach(l -> l.onCallCreatedButNeverAdded(call));
+            mListeners.forEach(l -> l.onCreateConnectionFailed(call));
         }
 
         // If a call diagnostic service is in use, we will log the original telephony-provided
@@ -5190,6 +5225,25 @@ public class CallsManager extends Call.ListenerBase
     }
 
     /**
+     * Asynchronously updates the emergency call notification.
+     * @param context the context for the update.
+     */
+    private void updateEmergencyCallNotificationAsync(Context context) {
+        mAsyncTaskExecutor.execute(() -> {
+            Log.startSession("CM.UEMCNA");
+            try {
+                boolean shouldShow = mBlockedNumbersAdapter.shouldShowEmergencyCallNotification(
+                        context);
+                Log.i(CallsManager.this, "updateEmergencyCallNotificationAsync; show=%b",
+                        shouldShow);
+                mBlockedNumbersAdapter.updateEmergencyCallNotification(context, shouldShow);
+            } finally {
+                Log.endSession();
+            }
+        });
+    }
+
+    /**
      * Creates a new call for an existing connection.
      *
      * @param callId The id of the new call.
@@ -5581,7 +5635,7 @@ public class CallsManager extends Call.ListenerBase
      *
      * @param pw The {@code IndentingPrintWriter} to write the state to.
      */
-    public void dump(IndentingPrintWriter pw) {
+    public void dump(IndentingPrintWriter pw, String[] args) {
         mContext.enforceCallingOrSelfPermission(android.Manifest.permission.DUMP, TAG);
         if (mCalls != null) {
             pw.println("mCalls: ");
@@ -5643,6 +5697,14 @@ public class CallsManager extends Call.ListenerBase
             mCallAnomalyWatchdog.dump(pw);
             pw.decreaseIndent();
         }
+
+        if (mEmergencyCallDiagnosticLogger != null) {
+            pw.println("mEmergencyCallDiagnosticLogger:");
+            pw.increaseIndent();
+            mEmergencyCallDiagnosticLogger.dump(pw, args);
+            pw.decreaseIndent();
+        }
+
         if (mDefaultDialerCache != null) {
             pw.println("mDefaultDialerCache:");
             pw.increaseIndent();
@@ -5754,7 +5816,7 @@ public class CallsManager extends Call.ListenerBase
             call.setConnectionService(service);
             service.createConnectionFailed(call);
             if (!mCalls.contains(call)){
-                mListeners.forEach(l -> l.onCallCreatedButNeverAdded(call));
+                mListeners.forEach(l -> l.onCreateConnectionFailed(call));
             }
         }
     }
@@ -5779,18 +5841,18 @@ public class CallsManager extends Call.ListenerBase
             call.setConnectionService(service);
             service.createConferenceFailed(call);
             if (!mCalls.contains(call)){
-                mListeners.forEach(l -> l.onCallCreatedButNeverAdded(call));
+                mListeners.forEach(l -> l.onCreateConnectionFailed(call));
             }
         }
     }
 
     /**
-     * Notify interested parties that a new call has been created, but not yet added to
-     * CallsManager.
+     * Notify interested parties that a new call is about to be handed off to a ConnectionService to
+     * be created.
      * @param theCall the new call.
      */
-    private void notifyCallCreated(final Call theCall) {
-        mListeners.forEach(l -> l.onCallCreated(theCall));
+    private void notifyStartCreateConnection(final Call theCall) {
+        mListeners.forEach(l -> l.onStartCreateConnection(theCall));
     }
 
     /**
@@ -5955,7 +6017,7 @@ public class CallsManager extends Call.ListenerBase
                 // Disconnect all self-managed calls to make priority for emergency call.
                 disconnectSelfManagedCalls("emergency call");
             }
-
+            notifyStartCreateConnection(call);
             call.startCreateConnection(mPhoneAccountRegistrar);
         }
 
@@ -6132,7 +6194,7 @@ public class CallsManager extends Call.ListenerBase
         extras.putBoolean(TelecomManager.EXTRA_IS_HANDOVER_CONNECTION, true);
         extras.putParcelable(TelecomManager.EXTRA_HANDOVER_FROM_PHONE_ACCOUNT,
                 fromCall.getTargetPhoneAccount());
-
+        notifyStartCreateConnection(call);
         call.startCreateConnection(mPhoneAccountRegistrar);
     }
 
@@ -6466,6 +6528,11 @@ public class CallsManager extends Call.ListenerBase
     @VisibleForTesting
     public Ringer getRinger() {
         return mRinger;
+    }
+
+    @VisibleForTesting
+    public VoipCallMonitor getVoipCallMonitor() {
+        return mVoipCallMonitor;
     }
 
     /**

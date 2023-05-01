@@ -884,8 +884,12 @@ public class PhoneAccountRegistrar {
             Log.w(this,
                     "Phone account %s does not have BIND_TELECOM_CONNECTION_SERVICE permission.",
                     account.getAccountHandle());
-            throw new SecurityException("PhoneAccount connection service requires "
-                    + "BIND_TELECOM_CONNECTION_SERVICE permission.");
+            throw new SecurityException("Registering a PhoneAccount requires either: "
+                    + "(1) The Service definition requires that the ConnectionService is guarded"
+                    + " with the BIND_TELECOM_CONNECTION_SERVICE, which can be defined using the"
+                    + " android:permission tag as part of the Service definition. "
+                    + "(2) The PhoneAccount capability called"
+                    + " CAPABILITY_SUPPORTS_TRANSACTIONAL_OPERATIONS.");
         }
         enforceCharacterLimit(account);
         enforceIconSizeLimit(account);
@@ -1373,10 +1377,6 @@ public class PhoneAccountRegistrar {
      * @return {@code True} if the phone account has permission.
      */
     public boolean phoneAccountRequiresBindPermission(PhoneAccountHandle phoneAccountHandle) {
-        if (hasTransactionalCallCapabilities(getPhoneAccountUnchecked(phoneAccountHandle))) {
-            return false;
-        }
-
         List<ResolveInfo> resolveInfos = resolveComponent(phoneAccountHandle);
         if (resolveInfos.isEmpty()) {
             Log.w(this, "phoneAccount %s not found", phoneAccountHandle.getComponentName());

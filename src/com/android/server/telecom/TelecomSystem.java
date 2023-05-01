@@ -26,12 +26,14 @@ import android.content.IntentFilter;
 import android.content.ServiceConnection;
 import android.content.pm.ResolveInfo;
 import android.net.Uri;
+import android.os.BugreportManager;
+import android.os.DropBoxManager;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.telecom.Log;
 import android.telecom.PhoneAccountHandle;
 import android.telephony.AnomalyReporter;
-import android.view.accessibility.AccessibilityManager;
+import android.telephony.TelephonyManager;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
@@ -42,6 +44,7 @@ import com.android.server.telecom.DefaultDialerCache.DefaultDialerManagerAdapter
 import com.android.server.telecom.bluetooth.BluetoothDeviceManager;
 import com.android.server.telecom.bluetooth.BluetoothRouteManager;
 import com.android.server.telecom.bluetooth.BluetoothStateReceiver;
+import com.android.server.telecom.callfiltering.BlockedNumbersAdapter;
 import com.android.server.telecom.components.UserCallIntentProcessor;
 import com.android.server.telecom.components.UserCallIntentProcessorFactory;
 import com.android.server.telecom.ui.AudioProcessingNotification;
@@ -49,6 +52,7 @@ import com.android.server.telecom.ui.DisconnectedCallNotifier;
 import com.android.server.telecom.ui.IncomingCallNotifier;
 import com.android.server.telecom.ui.MissedCallNotifierImpl.MissedCallNotifierImplFactory;
 import com.android.server.telecom.ui.ToastFactory;
+import com.android.server.telecom.voip.TransactionManager;
 
 import java.io.FileNotFoundException;
 import java.io.InputStream;
@@ -212,9 +216,11 @@ public class TelecomSystem {
             ContactsAsyncHelper.Factory contactsAsyncHelperFactory,
             DeviceIdleControllerAdapter deviceIdleControllerAdapter,
             Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
-            Executor asyncTaskExecutor) {
+            Executor asyncTaskExecutor,
+            BlockedNumbersAdapter blockedNumbersAdapter) {
         mContext = context.getApplicationContext();
         LogUtils.initLogging(mContext);
+        android.telecom.Log.setLock(mLock);
         AnomalyReporter.initialize(mContext);
         DefaultDialerManagerAdapter defaultDialerAdapter =
                 new DefaultDialerCache.DefaultDialerManagerAdapterImpl();
@@ -333,10 +339,17 @@ public class TelecomSystem {
                 }
             };
 
+            EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger =
+                    new EmergencyCallDiagnosticLogger(mContext.getSystemService(
+                            TelephonyManager.class), mContext.getSystemService(
+                            BugreportManager.class), timeoutsAdapter, mContext.getSystemService(
+                            DropBoxManager.class), asyncTaskExecutor, clockProxy);
+
             CallAnomalyWatchdog callAnomalyWatchdog = new CallAnomalyWatchdog(
                     Executors.newSingleThreadScheduledExecutor(),
-                    mLock, timeoutsAdapter, clockProxy);
+                    mLock, timeoutsAdapter, clockProxy, emergencyCallDiagnosticLogger);
 
+            TransactionManager transactionManager = TransactionManager.getInstance();
             mCallsManager = new CallsManager(
                     mContext,
                     mLock,
@@ -370,7 +383,10 @@ public class TelecomSystem {
                     callEndpointControllerFactory,
                     callAnomalyWatchdog,
                     accessibilityManagerAdapter,
-                    asyncTaskExecutor);
+                    asyncTaskExecutor,
+                    blockedNumbersAdapter,
+                    transactionManager,
+                    emergencyCallDiagnosticLogger);
 
             mIncomingCallNotifier = incomingCallNotifier;
             incomingCallNotifier.setCallsManagerProxy(new IncomingCallNotifier.CallsManagerProxy() {
