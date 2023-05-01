@@ -3212,8 +3212,18 @@ public class CallsManager extends Call.ListenerBase
                 return false;
             }
             if (canHold(activeCall)) {
-                activeCall.hold();
-                return true;
+                // When Pseudo DSDA call is answered via BT, there is a limitation that we will try
+                // to put the call on hold first before disconnecting, below condiiton is added to
+                // stop the additional HOLD at Telecom.
+                // If there are no call extras present, we need to follow base behavior and allow
+                // the HOLD request, if extras are present however we need to allow only for
+                // non Pseudo DSDA cases.
+                if (call.getExtras() == null ||
+                        !call.getExtras().getBoolean(Connection.EXTRA_ANSWERING_DROPS_FG_CALL)) {
+                    activeCall.hold();
+                    return true;
+                }
+                return false;
             } else if (supportsHold(activeCall)
                     && areFromSameSource(activeCall, call)) {
 
