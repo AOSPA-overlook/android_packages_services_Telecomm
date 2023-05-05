@@ -483,6 +483,8 @@ public class CallsManager extends Call.ListenerBase
 
     private AnomalyReporterAdapter mAnomalyReporter = new AnomalyReporterAdapterImpl();
 
+    private final MmiUtils mMmiUtils = new MmiUtils();
+
     // Two global variables used to handle the Emergency Call when there
     // is no room available for emergency call. Buffer the Emergency Call
     // in mPendingMOEmerCall until the Current Active call is disconnected
@@ -1918,7 +1920,7 @@ public class CallsManager extends Call.ListenerBase
         CompletableFuture<Call> makeRoomForCall = setAccountHandle.thenComposeAsync(
                 potentialPhoneAccounts -> {
                     Log.i(CallsManager.this, "make room for outgoing call stage");
-                    if (isPotentialInCallMMICode(handle) && !isSelfManaged) {
+                    if (mMmiUtils.isPotentialInCallMMICode(handle) && !isSelfManaged) {
                         return CompletableFuture.completedFuture(finalCall);
                     }
                     // If a call is being reused, then it has already passed the
@@ -2186,7 +2188,7 @@ public class CallsManager extends Call.ListenerBase
                     setIntentExtrasAndStartTime(callToUse, extras);
                     setCallSourceToAnalytics(callToUse, originalIntent);
 
-                    if (isPotentialMMICode(handle) && !isSelfManaged) {
+                    if (mMmiUtils.isPotentialMMICode(handle) && !isSelfManaged) {
                         // Do not add the call if it is a potential MMI code.
                         callToUse.addListener(this);
                     } else if (!mCalls.contains(callToUse) && mPendingMOEmerCall == null) {
@@ -4615,37 +4617,6 @@ public class CallsManager extends Call.ListenerBase
         }
     }
 
-    private boolean isPotentialMMICode(Uri handle) {
-        return (handle != null && handle.getSchemeSpecificPart() != null
-                && handle.getSchemeSpecificPart().contains("#"));
-    }
-
-    /**
-     * Determines if a dialed number is potentially an In-Call MMI code.  In-Call MMI codes are
-     * MMI codes which can be dialed when one or more calls are in progress.
-     * <P>
-     * Checks for numbers formatted similar to the MMI codes defined in:
-     * {@link com.android.internal.telephony.Phone#handleInCallMmiCommands(String)}
-     *
-     * @param handle The URI to call.
-     * @return {@code True} if the URI represents a number which could be an in-call MMI code.
-     */
-    private boolean isPotentialInCallMMICode(Uri handle) {
-        if (handle != null && handle.getSchemeSpecificPart() != null &&
-                handle.getScheme() != null &&
-                handle.getScheme().equals(PhoneAccount.SCHEME_TEL)) {
-
-            String dialedNumber = handle.getSchemeSpecificPart();
-            return (dialedNumber.equals("0") ||
-                    (dialedNumber.startsWith("1") && dialedNumber.length() <= 2) ||
-                    (dialedNumber.startsWith("2") && dialedNumber.length() <= 2) ||
-                    dialedNumber.equals("3") ||
-                    dialedNumber.equals("4") ||
-                    dialedNumber.equals("5"));
-        }
-        return false;
-    }
-
     /**
      * Determines if there are any ongoing self managed calls for the given package/user.
      * @param packageName The package name to check.
@@ -5090,9 +5061,18 @@ public class CallsManager extends Call.ListenerBase
             return true;
         }
 
-        // If the live call is stuck in a connecting state, then we should disconnect it in favor
-        // of the new outgoing call and prompt the user to generate a bugreport.
-        if (liveCall.getState() == CallState.CONNECTING) {
+        // If the live call is stuck in a connecting state for longer than the transitory timeout,
+        // then we should disconnect it in favor of the new outgoing call and prompt the user to
+        // generate a bugreport.
+        // TODO: In the future we should let the CallAnomalyWatchDog do this disconnection of the
+        // live call stuck in the connecting state.  Unfortunately that code will get tripped up by
+        // calls that have a longer than expected new outgoing call broadcast response time.  This
+        // mitigation is intended to catch calls stuck in a CONNECTING state for a long time that
+        // block outgoing calls.  However, if the user dials two calls in quick succession it will
+        // result in both calls getting disconnected, which is not optimal.
+        if (liveCall.getState() == CallState.CONNECTING
+                && ((mClockProxy.elapsedRealtime() - liveCall.getCreationElapsedRealtimeMillis())
+                > mTimeoutsAdapter.getNonVoipCallTransitoryStateTimeoutMillis())) {
             mAnomalyReporter.reportAnomaly(LIVE_CALL_STUCK_CONNECTING_ERROR_UUID,
                     LIVE_CALL_STUCK_CONNECTING_ERROR_MSG);
             liveCall.disconnect("Force disconnect CONNECTING call.");
@@ -5750,10 +5730,11 @@ public class CallsManager extends Call.ListenerBase
     */
     private void maybeShowErrorDialogOnDisconnect(Call call) {
         Bundle extras = call.getIntentExtras();
-        if (call.getState() == CallState.DISCONNECTED && (isPotentialMMICode(call.getHandle())
-                || isPotentialInCallMMICode(call.getHandle()) ||
-                (extras != null && extras.getBoolean(EXTRA_KEY_DISPLAY_ERROR_DIALOG, false))) &&
-                !mCalls.contains(call)) {
+        if (call.getState() == CallState.DISCONNECTED && (mMmiUtils.isPotentialMMICode(
+                call.getHandle())
+                || mMmiUtils.isPotentialInCallMMICode(call.getHandle()) ||
+                (extras != null && extras.getBoolean(EXTRA_KEY_DISPLAY_ERROR_DIALOG, false)))
+                && !mCalls.contains(call)) {
             extras.remove(EXTRA_KEY_DISPLAY_ERROR_DIALOG);
             DisconnectCause disconnectCause = call.getDisconnectCause();
             if (!TextUtils.isEmpty(disconnectCause.getDescription()) && ((disconnectCause.getCode()

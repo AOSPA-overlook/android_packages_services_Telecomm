@@ -329,6 +329,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
      */
     private long mCreationTimeMillis;
 
+    /**
+     * The elapsed realtime millis when this call was created; this can be used to determine how
+     * long has elapsed since the call was first created.
+     */
+    private long mCreationElapsedRealtimeMillis;
+
     /** The time this call was made active. */
     private long mConnectTimeMillis = 0;
 
@@ -835,6 +841,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         mClockProxy = clockProxy;
         mToastFactory = toastFactory;
         mCreationTimeMillis = mClockProxy.currentTimeMillis();
+        mCreationElapsedRealtimeMillis = mClockProxy.elapsedRealtime();
         mMissedReason = MISSED_REASON_NOT_MISSED;
         mStartRingTime = 0;
 
@@ -2078,8 +2085,12 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
         return mCreationTimeMillis;
     }
 
-    public void setCreationTimeMillis(long time) {
-        mCreationTimeMillis = time;
+    /**
+     * @return The elapsed realtime millis when the call was created; ONLY useful for determining
+     * how long has elapsed since the call was first created.
+     */
+    public long getCreationElapsedRealtimeMillis() {
+        return mCreationElapsedRealtimeMillis;
     }
 
     public long getConnectTimeMillis() {
