@@ -920,6 +920,9 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                         callingPhoneAccountHandle.getComponentName().getPackageName());
             }
 
+            boolean hasCrossUserAccess = mContext.checkCallingOrSelfPermission(
+                    android.Manifest.permission.INTERACT_ACROSS_USERS)
+                    == PackageManager.PERMISSION_GRANTED;
             long token = Binder.clearCallingIdentity();
             try {
                 synchronized (mLock) {
@@ -931,7 +934,7 @@ public class ConnectionServiceWrapper extends ServiceBinder implements
                     // an emergency call.
                             mPhoneAccountRegistrar.getCallCapablePhoneAccounts(null /*uriScheme*/,
                             false /*includeDisabledAccounts*/, userHandle, 0 /*capabilities*/,
-                            0 /*excludedCapabilities*/, false);
+                            0 /*excludedCapabilities*/, hasCrossUserAccess);
                     PhoneAccountHandle phoneAccountHandle = null;
                     for (PhoneAccountHandle accountHandle : accountHandles) {
                         if(accountHandle.equals(callingPhoneAccountHandle)) {

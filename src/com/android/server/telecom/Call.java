@@ -425,6 +425,16 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
 
     private boolean mIsEmergencyCall;
 
+    /**
+     * Flag indicating if ECBM is active for the target phone account. This only applies to MT calls
+     * in the scenario of work profiles (when the profile is paused and the user has only registered
+     * a work sim). Normally, MT calls made to the work sim should be rejected when the work apps
+     * are paused. However, when the admin makes a MO ecall, ECBM should be enabled for that sim to
+     * allow non-emergency MT calls. MO calls don't apply because the phone account would be
+     * rejected from selection if the owner is not placing the call.
+     */
+    private boolean mIsInECBM;
+
     // The Call is considered an emergency call for testing, but will not actually connect to
     // emergency services.
     private boolean mIsTestEmergencyCall;
@@ -1605,6 +1615,21 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     }
 
     /**
+     * @return {@code true} if the target phone account is in ECBM.
+     */
+    public boolean isInECBM() {
+        return mIsInECBM;
+    }
+
+    /**
+     * Set if the target phone account is in ECBM.
+     * @param isInEcbm {@code true} if target phone account is in ECBM, {@code false} otherwise.
+     */
+    public void setIsInECBM(boolean isInECBM) {
+        mIsInECBM = isInECBM;
+    }
+
+    /**
      * @return {@code true} if the network has identified this call as an emergency call.
      */
     public boolean isNetworkIdentifiedEmergencyCall() {
@@ -1695,6 +1720,11 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
     public void setTargetPhoneAccount(PhoneAccountHandle accountHandle) {
         if (!Objects.equals(mTargetPhoneAccountHandle, accountHandle)) {
             mTargetPhoneAccountHandle = accountHandle;
+            // Update the last MO emergency call in the helper, if applicable.
+            if (isEmergencyCall() && !isIncoming()) {
+                mCallsManager.getEmergencyCallHelper().setLastOutgoingEmergencyCallPAH(
+                        accountHandle);
+            }
             for (Listener l : mListeners) {
                 l.onTargetPhoneAccountChanged(this);
             }
@@ -4637,7 +4667,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
             throw new UnsupportedOperationException(
                     "Can't streaming call created by non voip apps");
         }
-
+        Log.addEvent(this, LogUtils.Events.START_STREAMING);
         synchronized (mLock) {
             if (mIsStreaming) {
                 // ignore
@@ -4657,7 +4687,7 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 // ignore
                 return;
             }
-
+            Log.addEvent(this, LogUtils.Events.STOP_STREAMING);
             mIsStreaming = false;
             for (Listener listener : mListeners) {
                 listener.onCallStreamingStateChanged(this, false /** isStreaming */);
