@@ -890,7 +890,7 @@ public class Ringer {
                 Log.i(this, "Stop CRS ");
                 mCrsRingtonePlayer.stop();
                 mIsCrsCall = false;
-            } else if (mRingtonePlayer.isPlaying()){
+            } else {
                 Log.i(this, "Stop local Ringing");
                 mRingtonePlayer.stop();
             }
