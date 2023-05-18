@@ -4184,6 +4184,10 @@ public class CallsManager extends Call.ListenerBase
                 CallState.ANSWERED, CallState.SIMULATED_RINGING);
     }
 
+    private List<Call> getAllRingingCalls() {
+        return getAllCallWithState(CallState.RINGING, CallState.ANSWERED);
+    }
+
     public Call getActiveCall() {
         return getFirstCallWithState(CallState.ACTIVE);
     }
@@ -4278,6 +4282,25 @@ public class CallsManager extends Call.ListenerBase
             }
         }
         return null;
+    }
+
+    /**
+     * Returns all calls that it finds with the given states.
+     */
+    private List<Call> getAllCallWithState(int... states) {
+        List<Call> callList = new ArrayList<>();
+        for (int currentState : states) {
+            for (Call call : mCalls) {
+                if (call.isExternalCall()) {
+                    continue;
+                }
+
+                if (currentState == call.getState()) {
+                    callList.add(call);
+                }
+            }
+        }
+        return callList;
     }
 
     Call createConferenceCall(
@@ -5013,9 +5036,16 @@ public class CallsManager extends Call.ListenerBase
             } else { // normal incoming ringing call.
                 // Hang up the ringing call to make room for the emergency call and mark as missed,
                 // since the user did not reject.
-                ringingCall.setOverrideDisconnectCauseCode(
-                        new DisconnectCause(DisconnectCause.MISSED));
-                ringingCall.reject(false, null, "emergency call dialed during ringing.");
+                // To support DSDA use case, hang up normal ringing calls on both SUBs.
+                // SIMULATED_RINGING is not supported on DSDA.
+                List<Call> ringingCalls = getAllRingingCalls();
+                for (Call call : ringingCalls) {
+                    Log.i(this, "makeRoomForOutgoingEmergencyCall disconnect"
+                            + "call =" + call);
+                    call.setOverrideDisconnectCauseCode(
+                            new DisconnectCause(DisconnectCause.MISSED));
+                    call.reject(false, null, "emergency call dialed during ringing.");
+                }
             }
         }
 
