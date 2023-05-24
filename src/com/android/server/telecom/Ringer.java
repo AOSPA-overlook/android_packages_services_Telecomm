@@ -931,10 +931,9 @@ public class Ringer {
     public boolean shouldRingForContact(Call call) {
         // avoid re-computing manager.matcherCallFilter(Bundle)
         if (call.wasDndCheckComputedForCall()) {
-            Log.v(this, "shouldRingForContact: returning computation from DndCallFilter.");
+            Log.i(this, "shouldRingForContact: returning computation from DndCallFilter.");
             return !call.isCallSuppressedByDoNotDisturb();
         }
-
         final Uri contactUri = call.getHandle();
         final Bundle peopleExtras = new Bundle();
         if (contactUri != null) {
@@ -942,13 +941,7 @@ public class Ringer {
             personList.add(new Person.Builder().setUri(contactUri.toString()).build());
             peopleExtras.putParcelableArrayList(Notification.EXTRA_PEOPLE_LIST, personList);
         }
-
-        // query NotificationManager
-        boolean shouldRing = mNotificationManager.matchesCallFilter(peopleExtras);
-        // store the suppressed status in the call object
-        call.setCallIsSuppressedByDoNotDisturb(!shouldRing);
-
-        return shouldRing;
+        return mNotificationManager.matchesCallFilter(peopleExtras);
     }
 
     private boolean hasExternalRinger(Call foregroundCall) {
