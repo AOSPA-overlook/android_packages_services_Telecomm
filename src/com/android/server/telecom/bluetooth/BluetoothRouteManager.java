@@ -249,7 +249,8 @@ public class BluetoothRouteManager extends StateMachine {
 
             SomeArgs args = (SomeArgs) msg.obj;
             String address = (String) args.arg2;
-            boolean switchingBtDevices = !Objects.equals(mDeviceAddress, address);
+            boolean switchingBtDevices = address != null &&
+                    !Objects.equals(mDeviceAddress, address);
             try {
                 switch (msg.what) {
                     case NEW_DEVICE_CONNECTED:
@@ -370,7 +371,8 @@ public class BluetoothRouteManager extends StateMachine {
 
             SomeArgs args = (SomeArgs) msg.obj;
             String address = (String) args.arg2;
-            boolean switchingBtDevices = !Objects.equals(mDeviceAddress, address);
+            boolean switchingBtDevices = address != null &&
+                    !Objects.equals(mDeviceAddress, address);
             try {
                 switch (msg.what) {
                     case NEW_DEVICE_CONNECTED:
