@@ -4378,6 +4378,13 @@ public class Call implements CreateConnectionResponse, EventManager.Loggable,
                 mVideoStateHistory = VideoProfile.STATE_AUDIO_ONLY;
                 return;
             }
+        } else if (((oldState == CallState.DIALING && newState == CallState.DISCONNECTED)
+                || (oldState == CallState.RINGING && newState == CallState.DISCONNECTED))
+                && (mCallsManager.isVideoCrbtVoLteCall(mVideoState)
+                || isVideoCrsForVoLteCall())) {
+            // For disconnecting Video CRBT/CRS for VoLTE call by APM or other abnormal scenarios
+            mVideoStateHistory = VideoProfile.STATE_AUDIO_ONLY;
+            return;
         }
 
         mVideoStateHistory |= mVideoState;
