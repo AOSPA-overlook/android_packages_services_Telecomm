@@ -425,6 +425,15 @@ public class TransactionalServiceWrapper implements
 
                     @Override
                     public void onError(CallException exception) {
+                        if (isAnswerRequest) {
+                            // This also sends the signal to untrack from TSW and the client_TSW
+                            removeCallFromCallsManager(call,
+                                    new DisconnectCause(DisconnectCause.REJECTED,
+                                            "client rejected to answer the call;"
+                                                    + " force disconnecting"));
+                        } else {
+                            mCallsManager.markCallAsOnHold(call);
+                        }
                         maybeResetForegroundCall(foregroundCallBeforeSwap, wasActive);
                     }
                 });
@@ -673,6 +682,7 @@ public class TransactionalServiceWrapper implements
 
 
     public void stopCallStreaming(Call call) {
+        Log.i(this, "stopCallStreaming; callid=%s", call.getId());
         if (call != null && call.isStreaming()) {
             VoipCallTransaction stopStreamingTransaction = createStopStreamingTransaction(call);
             addTransactionsToManager(stopStreamingTransaction, new ResultReceiver(null));

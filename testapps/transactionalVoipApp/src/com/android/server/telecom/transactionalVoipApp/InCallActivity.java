@@ -57,6 +57,11 @@ public class InCallActivity extends Activity {
         setContentView(R.layout.in_call_activity);
 
         Bundle extras = getIntent().getExtras();
+        // Copy the extras with properties like call direction into the extras so the below
+        // code can access them.
+        if (extras != null && extras.containsKey(Utils.sEXTRAS_KEY)) {
+            extras.putAll(extras.getBundle(Utils.sEXTRAS_KEY));
+        }
         if (extras != null) {
             mCallDirection = extras.getInt(Utils.sCALL_DIRECTION_KEY, DIRECTION_INCOMING);
         }
@@ -211,7 +216,7 @@ public class InCallActivity extends Activity {
                         Utils.PHONE_ACCOUNT_HANDLE,
                         mCallDirection,
                         "Alan Turing",
-                        Uri.parse("tel:6506959001")).build();
+                        Uri.parse("tel:+16506959001")).build();
 
         mTelecomManager.addCall(callAttributes, Runnable::run,
                 new OutcomeReceiver<CallControl, CallException>() {
@@ -254,14 +259,14 @@ public class InCallActivity extends Activity {
                 new OutcomeReceiver<Void, CallException>() {
                     @Override
                     public void onResult(Void result) {
-                        Log.i(TAG, String.format("success w/ %s", tag));
+                        Log.i(TAG, String.format("requestEndpointChange: success w/ %s", tag));
                         updateCurrentEndpointWithOnResult(endpoint);
                     }
 
                     @Override
                     public void onError(CallException e) {
-                        Log.i(TAG, String.format("%s :failed to switch to endpoint=[%s],"
-                                + " due to exception=[%s]", tag, endpoint, e.toString()));
+                        Log.i(TAG, String.format("requestEndpointChange: %s failed to switch to "
+                                + "endpoint=[%s] due to exception=[%s]", tag, endpoint, e));
                     }
                 });
     }

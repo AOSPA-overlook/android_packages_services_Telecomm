@@ -336,6 +336,13 @@ public class InCallController extends CallsManagerListenerBase implements
             mIsConnected = true;
             mInCallServiceInfo.setBindingStartTime(mClockProxy.elapsedRealtime());
             UserHandle userToBind = getUserFromCall(call);
+            boolean isManagedProfile = UserUtil.isManagedProfile(mContext, userToBind);
+            // Note that UserHandle.CURRENT fails to capture the work profile, so we need to handle
+            // it separately to ensure that the ICS is bound to the appropriate user. If ECBM is
+            // active, we know that a work sim was previously used to place a MO emergency call. We
+            // need to ensure that we bind to the CURRENT_USER in this case, as the work user would
+            // not be running (handled in getUserFromCall).
+            userToBind = isManagedProfile ? userToBind : UserHandle.CURRENT;
             if (!mContext.bindServiceAsUser(intent, mServiceConnection,
                     Context.BIND_AUTO_CREATE | Context.BIND_FOREGROUND_SERVICE
                         | Context.BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS
@@ -801,6 +808,9 @@ public class InCallController extends CallsManagerListenerBase implements
             }
             Call callToConnectWith = mCallIdMapper.getCalls().iterator().next();
             for (InCallServiceBindingConnection newConnection : newConnections) {
+                // Ensure we track the new sub-connection so that when we later disconnect we will
+                // be able to disconnect it.
+                mSubConnections.add(newConnection);
                 newConnection.connect(callToConnectWith);
             }
         }
@@ -1184,6 +1194,11 @@ public class InCallController extends CallsManagerListenerBase implements
     @Override
     public void onCallAdded(Call call) {
         UserHandle userFromCall = getUserFromCall(call);
+
+        Log.i(this, "onCallAdded: %s", call);
+        // Track the call if we don't already know about it.
+        addCall(call);
+
         if (!isBoundAndConnectedToServices(userFromCall)) {
             Log.i(this, "onCallAdded: %s; not bound or connected.", call);
             // We are not bound, or we're not connected.
@@ -1198,10 +1213,6 @@ public class InCallController extends CallsManagerListenerBase implements
             // This is in case an emergency call is added while there is an existing call.
             mEmergencyCallHelper.maybeGrantTemporaryLocationPermission(call,
                     userFromCall);
-
-            Log.i(this, "onCallAdded: %s", call);
-            // Track the call if we don't already know about it.
-            addCall(call);
 
             if (inCallServiceConnection != null) {
                 Log.i(this, "mInCallServiceConnection isConnected=%b",
@@ -2192,7 +2203,8 @@ public class InCallController extends CallsManagerListenerBase implements
      * Adds the call to the list of calls tracked by the {@link InCallController}.
      * @param call The call to add.
      */
-    private void addCall(Call call) {
+    @VisibleForTesting
+    public void addCall(Call call) {
         if (mCallIdMapper.getCalls().size() == 0) {
             mAppOpsManager.startWatchingActive(new String[] { OPSTR_RECORD_AUDIO },
                     java.lang.Runnable::run, this);
@@ -2595,7 +2607,8 @@ public class InCallController extends CallsManagerListenerBase implements
             UserManager userManager = mContext.getSystemService(UserManager.class);
             // Emergency call should never be blocked, so if the user associated with call is in
             // quite mode, use the primary user for the emergency call.
-            if (call.isEmergencyCall() && userManager.isQuietModeEnabled(userFromCall)) {
+            if ((call.isEmergencyCall() || call.isInECBM())
+                    && userManager.isQuietModeEnabled(userFromCall)) {
                 return mCallsManager.getCurrentUserHandle();
             }
             return userFromCall;

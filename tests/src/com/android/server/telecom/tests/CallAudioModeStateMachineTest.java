@@ -117,7 +117,7 @@ public class CallAudioModeStateMachineTest extends TelecomTestCase {
         when(mCallAudioManager.startRinging()).thenReturn(false);
 
         sm.sendMessage(CallAudioModeStateMachine.START_CALL_STREAMING, new Builder()
-                .setHasActiveOrDialingCalls(false)
+                .setHasActiveOrDialingCalls(true)
                 .setHasRingingCalls(false)
                 .setHasHoldingCalls(false)
                 .setIsTonePlaying(false)
@@ -131,7 +131,7 @@ public class CallAudioModeStateMachineTest extends TelecomTestCase {
         assertEquals(CallAudioModeStateMachine.STREAMING_STATE_NAME, sm.getCurrentStateName());
 
         verify(mAudioManager, never()).requestAudioFocusForCall(anyInt(), anyInt());
-        verify(mAudioManager).setMode(eq(AudioManager.MODE_CALL_REDIRECT));
+        verify(mAudioManager).setMode(eq(AudioManager.MODE_COMMUNICATION_REDIRECT));
     }
 
     @SmallTest

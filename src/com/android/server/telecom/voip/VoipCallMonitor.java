@@ -37,6 +37,8 @@ import com.android.internal.annotations.VisibleForTesting;
 import com.android.server.LocalServices;
 import com.android.server.telecom.Call;
 import com.android.server.telecom.CallsManagerListenerBase;
+import com.android.server.telecom.LogUtils;
+import com.android.server.telecom.LoggedHandlerExecutor;
 import com.android.server.telecom.TelecomSystem;
 
 import java.util.ArrayList;
@@ -45,14 +47,15 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 public class VoipCallMonitor extends CallsManagerListenerBase {
 
-    private final List<Call> mPendingCalls;
+    private final List<Call> mNotificationPendingCalls;
     // Same notification may be passed as different object in onNotificationPosted and
     // onNotificationRemoved. Use its string as key to cache ongoing notifications.
-    private final Map<String, Call> mNotifications;
-    private final Map<PhoneAccountHandle, Set<Call>> mPhoneAccountHandleListMap;
+    private final Map<NotificationInfo, Call> mNotificationInfoToCallMap;
+    private final Map<PhoneAccountHandle, Set<Call>> mAccountHandleToCallMap;
     private ActivityManagerInternal mActivityManagerInternal;
     private final Map<PhoneAccountHandle, ServiceConnection> mServices;
     private NotificationListenerService mNotificationListener;
@@ -60,18 +63,20 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
     private final HandlerThread mHandlerThread;
     private final Handler mHandler;
     private final Context mContext;
-    private List<StatusBarNotification> mPendingSBN;
+    private List<NotificationInfo> mCachedNotifications;
+    private TelecomSystem.SyncRoot mSyncRoot;
 
     public VoipCallMonitor(Context context, TelecomSystem.SyncRoot lock) {
+        mSyncRoot = lock;
         mContext = context;
         mHandlerThread = new HandlerThread(this.getClass().getSimpleName());
         mHandlerThread.start();
         mHandler = new Handler(mHandlerThread.getLooper());
-        mPendingCalls = new ArrayList<>();
-        mPendingSBN = new ArrayList<>();
-        mNotifications = new HashMap<>();
+        mNotificationPendingCalls = new ArrayList<>();
+        mCachedNotifications = new ArrayList<>();
+        mNotificationInfoToCallMap = new HashMap<>();
         mServices = new HashMap<>();
-        mPhoneAccountHandleListMap = new HashMap<>();
+        mAccountHandleToCallMap = new HashMap<>();
         mActivityManagerInternal = LocalServices.getService(ActivityManagerInternal.class);
 
         mNotificationListener = new NotificationListenerService() {
@@ -79,19 +84,21 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
             public void onNotificationPosted(StatusBarNotification sbn) {
                 synchronized (mLock) {
                     if (sbn.getNotification().isStyle(Notification.CallStyle.class)) {
+                        NotificationInfo info = new NotificationInfo(sbn.getPackageName(),
+                                sbn.getUser());
                         boolean sbnMatched = false;
-                        for (Call call : mPendingCalls) {
-                            if (notificationMatchedCall(sbn, call)) {
-                                mPendingCalls.remove(call);
-                                mNotifications.put(sbn.toString(), call);
+                        for (Call call : mNotificationPendingCalls) {
+                            if (info.matchesCall(call)) {
+                                mNotificationPendingCalls.remove(call);
+                                mNotificationInfoToCallMap.put(info, call);
                                 sbnMatched = true;
                                 break;
                             }
                         }
                         if (!sbnMatched) {
-                            // notification may posted before we started to monitor the call, cache
+                            // notification may post before we started to monitor the call, cache
                             // this notification and try to match it later with new added call.
-                            mPendingSBN.add(sbn);
+                            mCachedNotifications.add(info);
                         }
                     }
                 }
@@ -100,14 +107,17 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
             @Override
             public void onNotificationRemoved(StatusBarNotification sbn) {
                 synchronized (mLock) {
-                    mPendingSBN.remove(sbn);
-                    if (mNotifications.isEmpty()) {
+                    NotificationInfo info = new NotificationInfo(sbn.getPackageName(),
+                            sbn.getUser());
+                    mCachedNotifications.remove(info);
+                    if (mNotificationInfoToCallMap.isEmpty()) {
                         return;
                     }
-                    Call call = mNotifications.getOrDefault(sbn.toString(), null);
+                    Call call = mNotificationInfoToCallMap.getOrDefault(info, null);
                     if (call != null) {
-                        mNotifications.remove(sbn.toString(), call);
-                        stopFGSDelegation(call.getTargetPhoneAccount());
+                        // TODO: fix potential bug for multiple calls of same voip app.
+                        mNotificationInfoToCallMap.remove(info, call);
+                        stopFGSDelegation(call);
                     }
                 }
             }
@@ -141,13 +151,16 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
 
         synchronized (mLock) {
             PhoneAccountHandle phoneAccountHandle = call.getTargetPhoneAccount();
-            Set<Call> callList = mPhoneAccountHandleListMap.computeIfAbsent(phoneAccountHandle,
+            Set<Call> callList = mAccountHandleToCallMap.computeIfAbsent(phoneAccountHandle,
                     k -> new HashSet<>());
             callList.add(call);
 
-            mHandler.post(
-                    () -> startFGSDelegation(call.getCallingPackageIdentity().mCallingPackagePid,
-                            call.getCallingPackageIdentity().mCallingPackageUid, call));
+            CompletableFuture.completedFuture(null).thenComposeAsync(
+                    (x) -> {
+                        startFGSDelegation(call.getCallingPackageIdentity().mCallingPackagePid,
+                                call.getCallingPackageIdentity().mCallingPackageUid, call);
+                        return null;
+                    }, new LoggedHandlerExecutor(mHandler, "VCM.oCA", mSyncRoot));
         }
     }
 
@@ -160,12 +173,12 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
         synchronized (mLock) {
             stopMonitorWorks(call);
             PhoneAccountHandle phoneAccountHandle = call.getTargetPhoneAccount();
-            Set<Call> callList = mPhoneAccountHandleListMap.computeIfAbsent(phoneAccountHandle,
+            Set<Call> callList = mAccountHandleToCallMap.computeIfAbsent(phoneAccountHandle,
                     k -> new HashSet<>());
             callList.remove(call);
 
             if (callList.isEmpty()) {
-                stopFGSDelegation(phoneAccountHandle);
+                stopFGSDelegation(call);
             }
         }
     }
@@ -192,7 +205,12 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
                 }
             };
             try {
-                mActivityManagerInternal.startForegroundServiceDelegate(options, fgsConnection);
+                if (mActivityManagerInternal
+                        .startForegroundServiceDelegate(options, fgsConnection)) {
+                    Log.addEvent(call, LogUtils.Events.GAINED_FGS_DELEGATION);
+                } else {
+                    Log.addEvent(call, LogUtils.Events.GAIN_FGS_DELEGATION_FAILED);
+                }
             } catch (Exception e) {
                 Log.i(this, "startForegroundServiceDelegate failed due to: " + e);
             }
@@ -200,19 +218,23 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
     }
 
     @VisibleForTesting
-    public void stopFGSDelegation(PhoneAccountHandle handle) {
+    public void stopFGSDelegation(Call call) {
         synchronized (mLock) {
-            Log.i(this, "stopFGSDelegation of handle %s", handle);
-            Set<Call> calls = mPhoneAccountHandleListMap.get(handle);
-            for (Call call : calls) {
-                stopMonitorWorks(call);
+            Log.i(this, "stopFGSDelegation of call %s", call);
+            PhoneAccountHandle handle = call.getTargetPhoneAccount();
+            Set<Call> calls = mAccountHandleToCallMap.get(handle);
+            if (calls != null) {
+                for (Call c : calls) {
+                    stopMonitorWorks(c);
+                }
             }
-            mPhoneAccountHandleListMap.remove(handle);
+            mAccountHandleToCallMap.remove(handle);
 
             if (mActivityManagerInternal != null) {
                 ServiceConnection fgsConnection = mServices.get(handle);
                 if (fgsConnection != null) {
                     mActivityManagerInternal.stopForegroundServiceDelegate(fgsConnection);
+                    Log.addEvent(call, LogUtils.Events.LOST_FGS_DELEGATION);
                 }
             }
         }
@@ -229,33 +251,36 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
     private void startMonitorNotification(Call call) {
         synchronized (mLock) {
             boolean sbnMatched = false;
-            for (StatusBarNotification sbn : mPendingSBN) {
-                if (notificationMatchedCall(sbn, call)) {
-                    mPendingSBN.remove(sbn);
-                    mNotifications.put(sbn.toString(), call);
+            for (NotificationInfo info : mCachedNotifications) {
+                if (info.matchesCall(call)) {
+                    mCachedNotifications.remove(info);
+                    mNotificationInfoToCallMap.put(info, call);
                     sbnMatched = true;
                     break;
                 }
             }
             if (!sbnMatched) {
                 // Only continue to
-                mPendingCalls.add(call);
-                mHandler.postDelayed(() -> {
-                    synchronized (mLock) {
-                        if (mPendingCalls.contains(call)) {
-                            Log.i(this, "Notification for voip-call %s haven't "
-                                    + "posted in time, stop delegation.", call.getId());
-                            stopFGSDelegation(call.getTargetPhoneAccount());
-                            mPendingCalls.remove(call);
-                        }
-                    }
-                }, 5000L);
+                mNotificationPendingCalls.add(call);
+                CompletableFuture<Void> future = new CompletableFuture<>();
+                mHandler.postDelayed(() -> future.complete(null), 5000L);
+                future.thenComposeAsync(
+                        (x) -> {
+                            if (mNotificationPendingCalls.contains(call)) {
+                                Log.i(this, "Notification for voip-call %s haven't "
+                                        + "posted in time, stop delegation.", call.getId());
+                                stopFGSDelegation(call);
+                                mNotificationPendingCalls.remove(call);
+                                return null;
+                            }
+                            return null;
+                        }, new LoggedHandlerExecutor(mHandler, "VCM.sMN", mSyncRoot));
             }
         }
     }
 
     private void stopMonitorNotification(Call call) {
-        mPendingCalls.remove(call);
+        mNotificationPendingCalls.remove(call);
     }
 
     @VisibleForTesting
@@ -268,15 +293,20 @@ public class VoipCallMonitor extends CallsManagerListenerBase {
         mNotificationListener = listener;
     }
 
-    private boolean notificationMatchedCall(StatusBarNotification sbn, Call call) {
-        String packageName = sbn.getPackageName();
-        UserHandle userHandle = sbn.getUser();
-        PhoneAccountHandle accountHandle = call.getTargetPhoneAccount();
+    private class NotificationInfo {
+        private String mPackageName;
+        private UserHandle mUserHandle;
 
-        return packageName != null &&
-                packageName.equals(call.getTargetPhoneAccount()
-                        .getComponentName().getPackageName())
-                && userHandle != null
-                && userHandle.equals(accountHandle.getUserHandle());
+        NotificationInfo(String packageName, UserHandle userHandle) {
+            mPackageName = packageName;
+            mUserHandle = userHandle;
+        }
+
+        boolean matchesCall(Call call) {
+            PhoneAccountHandle accountHandle = call.getTargetPhoneAccount();
+            return mPackageName != null && mPackageName.equals(
+                   accountHandle.getComponentName().getPackageName())
+                    && mUserHandle != null && mUserHandle.equals(accountHandle.getUserHandle());
+        }
     }
 }

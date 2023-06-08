@@ -435,42 +435,65 @@ public class RingerTest extends TelecomTestCase {
     }
 
     /**
-     * assert {@link Ringer#shouldRingForContact(Call, Context) } sets the Call object with suppress
-     * caller
-     *
-     * @throws Exception; should not throw exception.
+     * test shouldRingForContact will suppress the incoming call if matchesCallFilter returns
+     * false (meaning DND is ON and the caller cannot bypass the settings)
      */
     @Test
-    public void testShouldRingForContact_CallSuppressed() throws Exception {
+    public void testShouldRingForContact_CallSuppressed() {
         // WHEN
         when(mockCall1.wasDndCheckComputedForCall()).thenReturn(false);
         when(mockCall1.getHandle()).thenReturn(Uri.parse(""));
-
         when(mContext.getSystemService(NotificationManager.class)).thenReturn(
                 mockNotificationManager);
+        // suppress the call
         when(mockNotificationManager.matchesCallFilter(any(Bundle.class))).thenReturn(false);
 
-        // THEN
+        // run the method under test
         assertFalse(mRingerUnderTest.shouldRingForContact(mockCall1));
-        verify(mockCall1, atLeastOnce()).setCallIsSuppressedByDoNotDisturb(true);
+
+        // THEN
+        // verify we never set the call object and matchesCallFilter is called
+        verify(mockCall1, never()).setCallIsSuppressedByDoNotDisturb(true);
+        verify(mockNotificationManager, times(1))
+                .matchesCallFilter(any(Bundle.class));
     }
 
     /**
-     * assert {@link Ringer#shouldRingForContact(Call, Context) } sets the Call object with ring
-     * caller
-     *
-     * @throws Exception; should not throw exception.
+     * test shouldRingForContact will alert the user of an incoming call if matchesCallFilter
+     * returns true (meaning DND is NOT suppressing the caller)
      */
     @Test
-    public void testShouldRingForContact_CallShouldRing() throws Exception {
+    public void testShouldRingForContact_CallShouldRing() {
         // WHEN
         when(mockCall1.wasDndCheckComputedForCall()).thenReturn(false);
         when(mockCall1.getHandle()).thenReturn(Uri.parse(""));
+        // alert the user of the call
         when(mockNotificationManager.matchesCallFilter(any(Bundle.class))).thenReturn(true);
 
-        // THEN
+        // run the method under test
         assertTrue(mRingerUnderTest.shouldRingForContact(mockCall1));
-        verify(mockCall1, atLeastOnce()).setCallIsSuppressedByDoNotDisturb(false);
+
+        // THEN
+        // verify we never set the call object and matchesCallFilter is called
+        verify(mockCall1, never()).setCallIsSuppressedByDoNotDisturb(false);
+        verify(mockNotificationManager, times(1))
+                .matchesCallFilter(any(Bundle.class));
+    }
+
+    /**
+     * ensure Telecom does not re-query the NotificationManager if the call object already has
+     * the result.
+     */
+    @Test
+    public void testShouldRingForContact_matchesCallFilterIsAlreadyComputed() {
+        // WHEN
+        when(mockCall1.wasDndCheckComputedForCall()).thenReturn(true);
+        when(mockCall1.isCallSuppressedByDoNotDisturb()).thenReturn(true);
+
+        // THEN
+        assertFalse(mRingerUnderTest.shouldRingForContact(mockCall1));
+        verify(mockCall1, never()).setCallIsSuppressedByDoNotDisturb(false);
+        verify(mockNotificationManager, never()).matchesCallFilter(any(Bundle.class));
     }
 
     @Test
@@ -505,8 +528,20 @@ public class RingerTest extends TelecomTestCase {
 
     @Test
     public void testStopFlashNotificationWhenRingStops() throws Exception {
-        ensureRingtoneMocked();
+        Ringtone mockRingtone = mock(Ringtone.class);
+        when(mockRingtoneFactory.getRingtone(
+                any(Call.class), nullable(VolumeShaper.Configuration.class), anyBoolean()))
+                .thenAnswer(x -> {
+                    // Be slow to create ringtone.
+                    try {
+                        Thread.sleep(300);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                    return mockRingtone;
+                });
         // Start call waiting to make sure that it doesn't stop when we start ringing
+        enableVibrationWhenRinging();
         mRingerUnderTest.startCallWaiting(mockCall1);
         when(mockCall2.wasDndCheckComputedForCall()).thenReturn(false);
         when(mockCall2.getHandle()).thenReturn(Uri.parse(""));
@@ -518,6 +553,8 @@ public class RingerTest extends TelecomTestCase {
         verify(mockAccessibilityManagerAdapter, atLeastOnce())
                 .stopFlashNotificationSequence(any(Context.class));
         mRingCompletionFuture.get();  // Don't leak async work.
+        verify(mockVibrator, never())  // cancelled before it started.
+                .vibrate(any(VibrationEffect.class), any(VibrationAttributes.class));
     }
 
     @SmallTest

@@ -752,6 +752,11 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     // No change in audio route required
                     return HANDLED;
                 case DISCONNECT_WIRED_HEADSET:
+                    if (mCallAudioManager.isCrsSupportedFromAudioHal() && isCrsCall()) {
+                        Log.i(this, "Ignoring disconnect HEADSET command." +
+                                "Not allowed during CRS call.");
+                        return HANDLED;
+                    }
                     if (mWasOnSpeaker) {
                         setSpeakerphoneOn(true);
                         sendInternalMessage(SWITCH_SPEAKER);
@@ -825,6 +830,13 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     transitionTo(mActiveHeadsetRoute);
                     break;
                 case SWITCH_SPEAKER:
+                    //Enable speaker to play CRS is fully controlled by audio, so ignore to
+                    //handle it from telecom in ActiveBluetoothRoute(enable in-band ringtone).
+                    if (mCallAudioManager.isCrsSupportedFromAudioHal() && isCrsCall()) {
+                        Log.i(this, "Ignoring switch to SPEAKER command." +
+                                "Not allowed during CRS call.");
+                        break;
+                    }
                     setSpeakerphoneOn(true);
                     transitionTo(mActiveSpeakerRoute);
                     break;
@@ -979,6 +991,13 @@ public class CallAudioRouteStateMachine extends StateMachine {
                     mHasUserExplicitlyLeftBluetooth = true;
                     // fall through
                 case SWITCH_SPEAKER:
+                    //Enable speaker to play CRS is fully controlled by audio, so ignore to
+                    //handle it from telecom in RingingBluetoothRoute.
+                    if (mCallAudioManager.isCrsSupportedFromAudioHal() && isCrsCall()) {
+                        Log.i(this, "Ignoring switch to SPEAKER command." +
+                                "Not allowed during CRS call.");
+                        return HANDLED;
+                    }
                     setSpeakerphoneOn(true);
                     // fall through
                 case SPEAKER_ON:
