@@ -761,7 +761,7 @@ public class CallsManager extends Call.ListenerBase
     public void onSuccessfulOutgoingCall(Call call, int callState) {
         Log.v(this, "onSuccessfulOutgoingCall, %s", call);
         call.setPostCallPackageName(getRoleManagerAdapter().getDefaultCallScreeningApp(
-                call.getUserHandleFromTargetPhoneAccount()));
+                call.getAssociatedUser()));
 
         setCallState(call, callState, "successful outgoing call");
         if (!mCalls.contains(call)) {
@@ -825,7 +825,7 @@ public class CallsManager extends Call.ListenerBase
     private IncomingCallFilterGraph setUpCallFilterGraph(Call incomingCall) {
         incomingCall.setIsUsingCallFiltering(true);
         String carrierPackageName = getCarrierPackageName();
-        UserHandle userHandle = incomingCall.getUserHandleFromTargetPhoneAccount();
+        UserHandle userHandle = incomingCall.getAssociatedUser();
         String defaultDialerPackageName = TelecomManager.from(mContext).
                 getDefaultDialerPackage(userHandle);
         String userChosenPackageName = getRoleManagerAdapter().
@@ -947,7 +947,7 @@ public class CallsManager extends Call.ListenerBase
         if (result.shouldAllowCall) {
             incomingCall.setPostCallPackageName(
                     getRoleManagerAdapter().getDefaultCallScreeningApp(
-                            incomingCall.getUserHandleFromTargetPhoneAccount()
+                            incomingCall.getAssociatedUser()
                     ));
 
             Log.i(this, "onCallFilteringComplete: allow call.");
@@ -1487,7 +1487,7 @@ public class CallsManager extends Call.ListenerBase
                 }
             }
             // Incoming address was set via EXTRA_INCOMING_CALL_ADDRESS above.
-            call.setInitiatingUser(phoneAccountHandle.getUserHandle());
+            call.setAssociatedUser(phoneAccountHandle.getUserHandle());
         }
 
         // Ensure new calls related to self-managed calls/connections are set as such. This will
@@ -1614,7 +1614,7 @@ public class CallsManager extends Call.ListenerBase
         // Check if the target phone account is possibly in ECBM.
         call.setIsInECBM(getEmergencyCallHelper()
                 .isLastOutgoingEmergencyCallPAH(call.getTargetPhoneAccount()));
-        if (mUserManager.isQuietModeEnabled(call.getUserHandleFromTargetPhoneAccount())
+        if (mUserManager.isQuietModeEnabled(call.getAssociatedUser())
                 && !call.isEmergencyCall() && !call.isInECBM()) {
             Log.d(TAG, "Rejecting non-emergency call because the owner %s is not running.",
                     phoneAccountHandle.getUserHandle());
@@ -1691,6 +1691,8 @@ public class CallsManager extends Call.ListenerBase
                 mToastFactory);
         call.initAnalytics();
 
+        // For unknown calls, base the associated user off of the target phone account handle.
+        call.setAssociatedUser(phoneAccountHandle.getUserHandle());
         setIntentExtrasAndStartTime(call, extras);
         call.addListener(this);
         notifyStartCreateConnection(call);
@@ -1854,7 +1856,7 @@ public class CallsManager extends Call.ListenerBase
                         || phoneAccountExtra.getBoolean(
                                 PhoneAccount.EXTRA_ADD_SELF_MANAGED_CALLS_TO_INCALLSERVICE, true));
             }
-            call.setInitiatingUser(initiatingUser);
+            call.setAssociatedUser(initiatingUser);
             isReusedCall = false;
         } else {
             isReusedCall = true;
@@ -2149,7 +2151,7 @@ public class CallsManager extends Call.ListenerBase
                     (callPhoneAccountHandlePair, uriCallerInfoPair) -> {
                         Call theCall = callPhoneAccountHandlePair.first;
                         UserHandle userHandleForCallScreening = theCall.
-                                getUserHandleFromTargetPhoneAccount();
+                                getAssociatedUser();
                         boolean isInContacts = uriCallerInfoPair.second != null
                                 && uriCallerInfoPair.second.contactExists;
                         Log.d(CallsManager.this, "outgoingCallIdStage: isInContacts=%s",
@@ -2390,7 +2392,7 @@ public class CallsManager extends Call.ListenerBase
         // Find the user chosen call screening app.
         String callScreeningApp =
                 mRoleManagerAdapter.getDefaultCallScreeningApp(
-                        theCall.getUserHandleFromTargetPhoneAccount());
+                        theCall.getAssociatedUser());
 
         CompletableFuture future =
                 new CallScreeningServiceHelper(mContext,
@@ -2554,7 +2556,7 @@ public class CallsManager extends Call.ListenerBase
                 && !phoneAccount.hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER)) {
             // Note that mCurrentUserHandle may not actually be the current user, i.e.
             // in the case of work profiles
-            UserHandle currentUserHandle = call.getUserHandleFromTargetPhoneAccount();
+            UserHandle currentUserHandle = call.getAssociatedUser();
             // Check if the phoneAccountHandle belongs to the current user
             if (phoneAccountHandle != null &&
                     !phoneAccountHandle.getUserHandle().equals(currentUserHandle)) {
@@ -2837,7 +2839,7 @@ public class CallsManager extends Call.ListenerBase
         // Auto-enable speakerphone if the originating intent specified to do so, if the call
         // is a video call, of if using speaker when docked
         PhoneAccount account = mPhoneAccountRegistrar.getPhoneAccount(
-                call.getTargetPhoneAccount(), call.getInitiatingUser());
+                call.getTargetPhoneAccount(), call.getAssociatedUser());
         boolean allowVideo = false;
         if (account != null) {
             allowVideo = account.hasCapabilities(PhoneAccount.CAPABILITY_VIDEO_CALLING);
@@ -2899,7 +2901,7 @@ public class CallsManager extends Call.ListenerBase
             }
         } else if (mPhoneAccountRegistrar.getCallCapablePhoneAccounts(
                 requireCallCapableAccountByHandle ? callHandleScheme : null, false,
-                call.getInitiatingUser(), false).isEmpty()) {
+                call.getAssociatedUser(), false).isEmpty()) {
             // If there are no call capable accounts, disconnect the call.
             markCallAsDisconnected(call, new DisconnectCause(DisconnectCause.CANCELED,
                     "No registered PhoneAccounts"));
@@ -3591,7 +3593,7 @@ public class CallsManager extends Call.ListenerBase
         } else {
             if (setDefault) {
                 mPhoneAccountRegistrar
-                        .setUserSelectedOutgoingPhoneAccount(account, call.getInitiatingUser());
+                        .setUserSelectedOutgoingPhoneAccount(account, call.getAssociatedUser());
             }
 
             if (mPendingAccountSelection != null) {
@@ -4359,6 +4361,8 @@ public class CallsManager extends Call.ListenerBase
         call.setVideoProvider(parcelableConference.getVideoProvider());
         call.setStatusHints(parcelableConference.getStatusHints());
         call.putConnectionServiceExtras(parcelableConference.getExtras());
+        // For conference calls, set the associated user from the target phone account user handle.
+        call.setAssociatedUser(phoneAccount.getUserHandle());
         // In case this Conference was added via a ConnectionManager, keep track of the original
         // Connection ID as created by the originating ConnectionService.
         Bundle extras = parcelableConference.getExtras();
@@ -5434,6 +5438,9 @@ public class CallsManager extends Call.ListenerBase
         call.setHandle(connection.getHandle(), connection.getHandlePresentation());
         call.setCallerDisplayName(connection.getCallerDisplayName(),
                 connection.getCallerDisplayNamePresentation());
+        // For existing connections, use the phone account user handle to determine the user
+        // association with the call.
+        call.setAssociatedUser(connection.getPhoneAccount().getUserHandle());
         call.addListener(this);
         call.putConnectionServiceExtras(connection.getExtras());
 
@@ -6100,7 +6107,9 @@ public class CallsManager extends Call.ListenerBase
         if (isSelfManaged) {
             call.setIsVoipAudioMode(true);
         }
-        call.setInitiatingUser(getCurrentUserHandle());
+        // Set associated user based on the existing call as it doesn't make sense to handover calls
+        // across user profiles.
+        call.setAssociatedUser(handoverFromCall.getAssociatedUser());
 
         // Ensure we don't try to place an outgoing call with video if video is not
         // supported.
@@ -6334,6 +6343,9 @@ public class CallsManager extends Call.ListenerBase
         fromCall.setHandoverDestinationCall(call);
         call.setHandoverSourceCall(fromCall);
         call.setHandoverState(HandoverState.HANDOVER_TO_STARTED);
+        // Set associated user based on the existing call as it doesn't make sense to handover calls
+        // across user profiles.
+        call.setAssociatedUser(fromCall.getAssociatedUser());
         fromCall.setHandoverState(HandoverState.HANDOVER_FROM_STARTED);
 
         if (isSpeakerEnabledForVideoCalls() && VideoProfile.isVideo(videoState)) {
@@ -6623,7 +6635,7 @@ public class CallsManager extends Call.ListenerBase
      * @return {@code true} if call is visible to the calling user
      */
     boolean isCallVisibleForUser(Call call, UserHandle userHandle) {
-        return call.getUserHandleFromTargetPhoneAccount().equals(userHandle)
+        return call.getAssociatedUser().equals(userHandle)
                 || call.getPhoneAccountFromHandle()
                 .hasCapabilities(PhoneAccount.CAPABILITY_MULTI_USER);
     }

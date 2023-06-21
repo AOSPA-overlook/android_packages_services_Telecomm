@@ -546,7 +546,7 @@ public class CallAudioManager extends CallsManagerListenerBase {
                 mIsSilenced = true;
             }
             for (Call call : mRingingCalls) {
-                UserHandle userFromCall = call.getUserHandleFromTargetPhoneAccount();
+                UserHandle userFromCall = call.getAssociatedUser();
                 // Do not try to silence calls when calling user is different from the phone account
                 // user, the account does not have CAPABILITY_MULTI_USER enabled, or if the user
                 // does not have the INTERACT_ACROSS_USERS permission enabled.
