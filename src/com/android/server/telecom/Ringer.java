@@ -32,7 +32,6 @@ import android.content.IntentFilter;
 import android.media.AudioAttributes;
 import android.media.AudioDeviceInfo;
 import android.media.AudioManager;
-import android.media.HwAudioSource;
 import android.media.Ringtone;
 import android.media.VolumeShaper;
 import android.net.Uri;
@@ -183,7 +182,6 @@ public class Ringer {
     private AudioManager mAudioManager;
     private NotificationManager mNotificationManager;
     private AccessibilityManagerAdapter mAccessibilityManagerAdapter;
-    private HwAudioSource mCrsRingtonePlayer;
     private boolean mIsCrsCall = false;
 
     /**
@@ -237,7 +235,6 @@ public class Ringer {
         mNotificationManager = notificationManager;
         mAudioManager = mContext.getSystemService(AudioManager.class);
         mAccessibilityManagerAdapter = accessibilityManagerAdapter;
-        mCrsRingtonePlayer = createCrsRingtonePlayer(context);
 
         if (mContext.getResources().getBoolean(R.bool.use_simple_vibration_pattern)) {
             mDefaultVibrationEffect = mVibrationEffectProxy.createWaveform(SIMPLE_VIBRATION_PATTERN,
@@ -480,38 +477,6 @@ public class Ringer {
         return crsVolume;
     }
 
-    /**
-     * Get the {@link AudioDeviceInfo} instance with {@link AudioDeviceInfo#TYPE_TELEPHONY}
-     * returns the first found one.
-     */
-    private AudioDeviceInfo findTelephonyRxDevice(Context context) {
-        if (!isCrsSupportedFromAudioHal()) {
-            return null;
-        }
-        Log.i(this, "findTelephonyRxDevice start");
-        AudioManager am = (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
-        AudioDeviceInfo[] devices = am.getDevices(AudioManager.GET_DEVICES_INPUTS);
-        for (AudioDeviceInfo device : devices) {
-            if (device.getType() == AudioDeviceInfo.TYPE_TELEPHONY && device.isSource()) {
-                Log.i(this, "findTelephonyRxDevice found device.");
-                return device;
-            }
-        }
-        Log.i(this, "findTelephonyRxDevice is null");
-        return null;
-    }
-
-    private HwAudioSource createCrsRingtonePlayer(Context context) {
-        Log.i(this, "createCrsRingtonePlayer start :: ");
-        AudioDeviceInfo rxDevice = findTelephonyRxDevice(context);
-        return (rxDevice != null) ? new HwAudioSource.Builder()
-            .setAudioAttributes(new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                    .build())
-            .setAudioDeviceInfo(rxDevice)
-            .build() : null;
-    }
-
     public boolean startRinging(Call foregroundCall, boolean isHfpDeviceAttached) {
         boolean deferBlockOnRingingFuture = false;
         // try-finally to ensure that the block on ringing future is always called.
@@ -572,6 +537,7 @@ public class Ringer {
                 return acquireAudioFocus;
             }
 
+            mIsCrsCall = foregroundCall.isCrsCall();
             stopCallWaiting();
 
             final boolean shouldFlash = attributes.shouldRingForContact();
@@ -720,7 +686,12 @@ public class Ringer {
                 }
             };
             deferBlockOnRingingFuture = true;  // Run in vibrationLogic.
-            if (ringtoneSupplier != null) {
+            if (mIsCrsCall && isCrsSupportedFromAudioHal()) {
+                //CRS has no haptics channel
+                Log.i(this, "Play CRS in RING Mode");
+                mAudioManager.setParameters("CRS_volume=" +
+                        mAudioManager.getStreamVolume(AudioManager.STREAM_RING));
+            } else if (ringtoneSupplier != null) {
                 mRingtonePlayer.play(ringtoneSupplier, afterRingtoneLogic);
             } else {
                 afterRingtoneLogic.accept(/* ringtone= */ null, /* stopped= */ false);
@@ -886,9 +857,10 @@ public class Ringer {
                 mRingingCall = null;
             }
 
-            if (mIsCrsCall && mCrsRingtonePlayer != null) {
+            if (mIsCrsCall && isCrsSupportedFromAudioHal()) {
                 Log.i(this, "Stop CRS ");
-                mCrsRingtonePlayer.stop();
+                //set CRS_volume as 0 when CRS is stopped or silence the call.
+                mAudioManager.setParameters("CRS_volume=0");
                 mIsCrsCall = false;
             } else {
                 Log.i(this, "Stop local Ringing");
@@ -918,8 +890,7 @@ public class Ringer {
     }
 
     public boolean isRinging() {
-        return mRingtonePlayer.isPlaying() ||
-            (mCrsRingtonePlayer != null && mCrsRingtonePlayer.isPlaying());
+        return mRingtonePlayer.isPlaying() || mIsCrsCall;
     }
 
     /**
