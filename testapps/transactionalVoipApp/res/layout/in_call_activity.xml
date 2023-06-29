@@ -29,6 +29,13 @@
     />
 
     <Button
+        android:id="@+id/updateCallStyleNotification"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/update_notification"
+    />
+
+    <Button
         android:id="@+id/answer_button"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
@@ -57,6 +64,12 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="@string/start_stream"/>
+
+    <Button
+        android:id="@+id/crash_app"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="@string/crash_app"/>
 
     <LinearLayout
         android:layout_width="wrap_content"

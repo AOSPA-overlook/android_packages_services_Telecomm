@@ -205,6 +205,7 @@ public class PhoneAccountRegistrar {
 
         // register context based receiver to clean up orphan phone accounts
         IntentFilter intentFilter = new IntentFilter(Intent.ACTION_MANAGED_PROFILE_REMOVED);
+        intentFilter.setPriority(IntentFilter.SYSTEM_HIGH_PRIORITY);
         mContext.registerReceiver(mManagedProfileReceiver, intentFilter);
 
         read();
@@ -562,10 +563,7 @@ public class PhoneAccountRegistrar {
         if (call == null) {
             return null;
         }
-        UserHandle userHandle = call.getInitiatingUser();
-        if (userHandle == null) {
-            userHandle = call.getTargetPhoneAccount().getUserHandle();
-        }
+        UserHandle userHandle = call.getAssociatedUser();
         PhoneAccountHandle targetPhoneAccount = call.getTargetPhoneAccount();
         Log.d(this, "getSimCallManagerFromCall: callId=%s, targetPhac=%s",
                 call.getId(), targetPhoneAccount);
