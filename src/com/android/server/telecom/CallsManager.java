@@ -1394,7 +1394,9 @@ public class CallsManager extends Call.ListenerBase
 
     public boolean hasVideoCall() {
         for (Call call : mCalls) {
-            if (VideoProfile.isVideo(call.getVideoState())) {
+            if (VideoProfile.isVideo(call.getVideoState())
+                    && !isVideoCrbtVoLteCall(call.getVideoState())
+                    && !call.isVideoCrsForVoLteCall()) {
                 return true;
             }
         }
