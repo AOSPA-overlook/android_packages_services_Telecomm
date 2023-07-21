@@ -62,7 +62,6 @@ import android.os.SystemClock;
 import android.os.UserHandle;
 import android.os.UserManager;
 import android.provider.BlockedNumberContract;
-import android.provider.Telephony;
 import android.telecom.CallException;
 import android.telecom.CallScreeningService;
 import android.telecom.CallerInfo;
@@ -156,6 +155,8 @@ public class CallsManagerTest extends TelecomTestCase {
     private static final int TEST_TIMEOUT = 5000;  // milliseconds
     private static final long STATE_TIMEOUT = 5000L;
     private static final int SECONDARY_USER_ID = 12;
+    private static final UserHandle TEST_USER_HANDLE = UserHandle.of(123);
+    private static final String TEST_PACKAGE_NAME = "GoogleMeet";
     private static final PhoneAccountHandle SIM_1_HANDLE = new PhoneAccountHandle(
             ComponentName.unflattenFromString("com.foo/.Blah"), "Sim1");
     private static final PhoneAccountHandle SIM_1_HANDLE_SECONDARY = new PhoneAccountHandle(
@@ -173,6 +174,10 @@ public class CallsManagerTest extends TelecomTestCase {
             ComponentName.unflattenFromString("com.baz/.Self"), "Self");
     private static final PhoneAccountHandle SELF_MANAGED_2_HANDLE = new PhoneAccountHandle(
             ComponentName.unflattenFromString("com.baz/.Self2"), "Self2");
+    private static final PhoneAccountHandle WORK_HANDLE = new PhoneAccountHandle(
+            ComponentName.unflattenFromString("com.foo/.Blah"), "work", new UserHandle(10));
+    private static final PhoneAccountHandle SELF_MANAGED_W_CUSTOM_HANDLE = new PhoneAccountHandle(
+            new ComponentName(TEST_PACKAGE_NAME, "class"), "1", TEST_USER_HANDLE);
     private static final PhoneAccount SIM_1_ACCOUNT = new PhoneAccount.Builder(SIM_1_HANDLE, "Sim1")
             .setCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION
                     | PhoneAccount.CAPABILITY_CALL_PROVIDER
@@ -202,6 +207,19 @@ public class CallsManagerTest extends TelecomTestCase {
             .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
             .setIsEnabled(true)
             .build();
+    private static final PhoneAccount WORK_ACCOUNT = new PhoneAccount.Builder(
+            WORK_HANDLE, "work")
+            .setCapabilities(PhoneAccount.CAPABILITY_SIM_SUBSCRIPTION
+                    | PhoneAccount.CAPABILITY_CALL_PROVIDER
+                    | PhoneAccount.CAPABILITY_PLACE_EMERGENCY_CALLS)
+            .setIsEnabled(true)
+            .build();
+    private static final PhoneAccount SM_W_DIFFERENT_PACKAGE_AND_USER = new PhoneAccount.Builder(
+            SELF_MANAGED_W_CUSTOM_HANDLE, "Self")
+            .setCapabilities(PhoneAccount.CAPABILITY_SELF_MANAGED)
+            .setIsEnabled(true)
+            .build();
+
     private static final Uri TEST_ADDRESS = Uri.parse("tel:555-1212");
     private static final Uri TEST_ADDRESS2 = Uri.parse("tel:555-1213");
     private static final Uri TEST_ADDRESS3 = Uri.parse("tel:555-1214");
@@ -338,6 +356,8 @@ public class CallsManagerTest extends TelecomTestCase {
                 eq(SIM_1_HANDLE), any())).thenReturn(SIM_1_ACCOUNT);
         when(mPhoneAccountRegistrar.getPhoneAccount(
                 eq(SIM_2_HANDLE), any())).thenReturn(SIM_2_ACCOUNT);
+        when(mPhoneAccountRegistrar.getPhoneAccount(
+                eq(WORK_HANDLE), any())).thenReturn(WORK_ACCOUNT);
         when(mToastFactory.makeText(any(), anyInt(), anyInt())).thenReturn(mToast);
         when(mToastFactory.makeText(any(), any(), anyInt())).thenReturn(mToast);
     }
@@ -2482,7 +2502,30 @@ public class CallsManagerTest extends TelecomTestCase {
 
     @SmallTest
     @Test
-    public void testRejectIncomingCallOnPAHInactive() throws Exception {
+    public void testRejectIncomingCallOnPAHInactive_SecondaryUser() throws Exception {
+        ConnectionServiceWrapper service = mock(ConnectionServiceWrapper.class);
+        doReturn(WORK_HANDLE.getComponentName()).when(service).getComponentName();
+        mCallsManager.addConnectionServiceRepositoryCache(WORK_HANDLE.getComponentName(),
+                WORK_HANDLE.getUserHandle(), service);
+
+        UserManager um = mContext.getSystemService(UserManager.class);
+        UserHandle newUser = new UserHandle(11);
+        when(mCallsManager.getCurrentUserHandle()).thenReturn(newUser);
+        when(um.isUserAdmin(eq(newUser.getIdentifier()))).thenReturn(false);
+        when(um.isQuietModeEnabled(eq(WORK_HANDLE.getUserHandle()))).thenReturn(false);
+        when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(eq(WORK_HANDLE)))
+                .thenReturn(WORK_ACCOUNT);
+        Call newCall = mCallsManager.processIncomingCallIntent(
+                WORK_HANDLE, new Bundle(), false);
+
+        verify(service, timeout(TEST_TIMEOUT)).createConnectionFailed(any());
+        assertFalse(newCall.isInECBM());
+        assertEquals(USER_MISSED_NOT_RUNNING, newCall.getMissedReason());
+    }
+
+    @SmallTest
+    @Test
+    public void testRejectIncomingCallOnPAHInactive_ProfilePaused() throws Exception {
         ConnectionServiceWrapper service = mock(ConnectionServiceWrapper.class);
         doReturn(SIM_2_HANDLE.getComponentName()).when(service).getComponentName();
         mCallsManager.addConnectionServiceRepositoryCache(SIM_2_HANDLE.getComponentName(),
@@ -2512,6 +2555,30 @@ public class CallsManagerTest extends TelecomTestCase {
         when(um.isQuietModeEnabled(eq(SIM_2_HANDLE.getUserHandle()))).thenReturn(true);
         Call newCall = mCallsManager.processIncomingCallIntent(
                 SIM_2_HANDLE, new Bundle(), false);
+
+        assertTrue(newCall.isInECBM());
+        verify(service, timeout(TEST_TIMEOUT).times(0)).createConnectionFailed(any());
+    }
+
+    @SmallTest
+    @Test
+    public void testAcceptIncomingCallOnPAHInactiveAndECBMActive_SecondaryUser() throws Exception {
+        ConnectionServiceWrapper service = mock(ConnectionServiceWrapper.class);
+        doReturn(WORK_HANDLE.getComponentName()).when(service).getComponentName();
+        mCallsManager.addConnectionServiceRepositoryCache(SIM_2_HANDLE.getComponentName(),
+                WORK_HANDLE.getUserHandle(), service);
+
+        when(mEmergencyCallHelper.isLastOutgoingEmergencyCallPAH(eq(WORK_HANDLE)))
+                .thenReturn(true);
+        UserManager um = mContext.getSystemService(UserManager.class);
+        UserHandle newUser = new UserHandle(11);
+        when(mCallsManager.getCurrentUserHandle()).thenReturn(newUser);
+        when(um.isUserAdmin(eq(newUser.getIdentifier()))).thenReturn(false);
+        when(um.isQuietModeEnabled(eq(WORK_HANDLE.getUserHandle()))).thenReturn(false);
+        when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(eq(WORK_HANDLE)))
+                .thenReturn(WORK_ACCOUNT);
+        Call newCall = mCallsManager.processIncomingCallIntent(
+                WORK_HANDLE, new Bundle(), false);
 
         assertTrue(newCall.isInECBM());
         verify(service, timeout(TEST_TIMEOUT).times(0)).createConnectionFailed(any());
@@ -3077,6 +3144,112 @@ public class CallsManagerTest extends TelecomTestCase {
         verify(mBlockedNumbersAdapter).updateEmergencyCallNotification(any(Context.class),
                 eq(false));
     }
+
+    /**
+     * Verify CallsManager#isInSelfManagedCall(packageName, userHandle) returns true when
+     * CallsManager is first made aware of the incoming call in processIncomingCallIntent.
+     */
+    @SmallTest
+    @Test
+    public void testAddNewIncomingCall_IsInSelfManagedCall() {
+        // GIVEN
+        assertEquals(0, mCallsManager.getSelfManagedCallsBeingSetup().size());
+        assertFalse(mCallsManager.isInSelfManagedCall(TEST_PACKAGE_NAME, TEST_USER_HANDLE));
+
+        // WHEN
+        when(mPhoneAccountRegistrar.getPhoneAccountUnchecked(any()))
+                .thenReturn(SM_W_DIFFERENT_PACKAGE_AND_USER);
+        UserManager um = mContext.getSystemService(UserManager.class);
+        when(um.isUserAdmin(eq(mCallsManager.getCurrentUserHandle().getIdentifier())))
+                .thenReturn(true);
+
+        // THEN
+        mCallsManager.processIncomingCallIntent(SELF_MANAGED_W_CUSTOM_HANDLE, new Bundle(), false);
+
+        assertEquals(1, mCallsManager.getSelfManagedCallsBeingSetup().size());
+        assertTrue(mCallsManager.isInSelfManagedCall(TEST_PACKAGE_NAME, TEST_USER_HANDLE));
+        assertEquals(0, mCallsManager.getCalls().size());
+    }
+
+    /**
+     * Verify CallsManager#isInSelfManagedCall(packageName, userHandle) returns true when
+     * CallsManager is first made aware of the outgoing call in StartOutgoingCall.
+     */
+    @SmallTest
+    @Test
+    public void testStartOutgoing_IsInSelfManagedCall() {
+        // GIVEN
+        assertEquals(0, mCallsManager.getSelfManagedCallsBeingSetup().size());
+        assertFalse(mCallsManager.isInSelfManagedCall(TEST_PACKAGE_NAME, TEST_USER_HANDLE));
+
+        // WHEN
+        when(mPhoneAccountRegistrar.getPhoneAccount(any(), any()))
+                .thenReturn(SM_W_DIFFERENT_PACKAGE_AND_USER);
+        // Ensure contact info lookup succeeds
+        doAnswer(invocation -> {
+            Uri handle = invocation.getArgument(0);
+            CallerInfo info = new CallerInfo();
+            CompletableFuture<Pair<Uri, CallerInfo>> callerInfoFuture = new CompletableFuture<>();
+            callerInfoFuture.complete(new Pair<>(handle, info));
+            return callerInfoFuture;
+        }).when(mCallerInfoLookupHelper).startLookup(any(Uri.class));
+        // Ensure we have candidate phone account handle info.
+        when(mPhoneAccountRegistrar.getOutgoingPhoneAccountForScheme(any(), any())).thenReturn(
+                SELF_MANAGED_W_CUSTOM_HANDLE);
+        when(mPhoneAccountRegistrar.getCallCapablePhoneAccounts(any(), anyBoolean(),
+                any(), anyInt(), anyInt(), anyBoolean())).thenReturn(
+                new ArrayList<>(List.of(SELF_MANAGED_W_CUSTOM_HANDLE)));
+
+        // THEN
+        mCallsManager.startOutgoingCall(TEST_ADDRESS, SELF_MANAGED_W_CUSTOM_HANDLE, new Bundle(),
+                TEST_USER_HANDLE, new Intent(), TEST_PACKAGE_NAME);
+
+        assertEquals(1, mCallsManager.getSelfManagedCallsBeingSetup().size());
+        assertTrue(mCallsManager.isInSelfManagedCall(TEST_PACKAGE_NAME, TEST_USER_HANDLE));
+        assertEquals(0, mCallsManager.getCalls().size());
+    }
+
+    /**
+     * Verify SelfManagedCallsBeingSetup is being cleaned up in CallsManager#addCall and
+     * CallsManager#removeCall.  This ensures no memory leaks.
+     */
+    @SmallTest
+    @Test
+    public void testCallsBeingSetupCleanup() {
+        Call spyCall = addSpyCall();
+        assertEquals(0, mCallsManager.getSelfManagedCallsBeingSetup().size());
+        // verify CallsManager#removeCall removes the call from SelfManagedCallsBeingSetup
+        mCallsManager.addCallBeingSetup(spyCall);
+        mCallsManager.removeCall(spyCall);
+        assertEquals(0, mCallsManager.getSelfManagedCallsBeingSetup().size());
+        // verify CallsManager#addCall removes the call from SelfManagedCallsBeingSetup
+        mCallsManager.addCallBeingSetup(spyCall);
+        mCallsManager.addCall(spyCall);
+        assertEquals(0, mCallsManager.getSelfManagedCallsBeingSetup().size());
+    }
+
+    /**
+     * Verify isInSelfManagedCall returns false if there is a self-managed call, but it is for a
+     * different package and user
+     */
+    @SmallTest
+    @Test
+    public void testIsInSelfManagedCall_PackageUserQueryIsWorkingAsIntended() {
+        // start an active call
+        Call randomCall = createSpyCall(SELF_MANAGED_HANDLE, CallState.ACTIVE);
+        mCallsManager.addCallBeingSetup(randomCall);
+        assertEquals(1, mCallsManager.getSelfManagedCallsBeingSetup().size());
+        // query isInSelfManagedCall for a package that is NOT in a call;  expect false
+        assertFalse(mCallsManager.isInSelfManagedCall(TEST_PACKAGE_NAME, TEST_USER_HANDLE));
+        // start another call
+        Call targetCall = addSpyCall(SELF_MANAGED_W_CUSTOM_HANDLE, CallState.DIALING);
+        when(targetCall.getTargetPhoneAccount()).thenReturn(SELF_MANAGED_W_CUSTOM_HANDLE);
+        when(targetCall.isSelfManaged()).thenReturn(true);
+        mCallsManager.addCallBeingSetup(targetCall);
+        // query isInSelfManagedCall for a package that is in a call
+        assertTrue(mCallsManager.isInSelfManagedCall(TEST_PACKAGE_NAME, TEST_USER_HANDLE));
+    }
+
 
     private Call addSpyCall() {
         return addSpyCall(SIM_2_HANDLE, CallState.ACTIVE);
