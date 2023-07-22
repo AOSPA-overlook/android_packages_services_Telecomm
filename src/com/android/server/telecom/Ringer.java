@@ -691,6 +691,7 @@ public class Ringer {
                 Log.i(this, "Play CRS in RING Mode");
                 mAudioManager.setParameters("CRS_volume=" +
                         mAudioManager.getStreamVolume(AudioManager.STREAM_RING));
+                afterRingtoneLogic.accept(/* ringtone= */ null, /* stopped= */ false);
             } else if (ringtoneSupplier != null) {
                 mRingtonePlayer.play(ringtoneSupplier, afterRingtoneLogic);
             } else {
