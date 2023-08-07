@@ -381,6 +381,7 @@ public class BluetoothDeviceManager {
         synchronized (mLock) {
             LinkedHashMap<String, BluetoothDevice> targetDeviceMap;
             if (deviceType == DEVICE_TYPE_LE_AUDIO) {
+                mGroupsByDevice.remove(device);
                 targetDeviceMap = mLeAudioDevicesByAddress;
             } else if (deviceType == DEVICE_TYPE_HEARING_AID) {
                 mHearingAidDeviceSyncIds.remove(device);
