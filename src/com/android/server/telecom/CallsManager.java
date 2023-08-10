@@ -2104,7 +2104,12 @@ public class CallsManager extends Call.ListenerBase
 
                                 Log.i(CallsManager.this, "Aborting call since there are no"
                                         + " available accounts.");
-                                showErrorMessage(R.string.cant_call_due_to_no_supported_service);
+
+                                int resId = getTelephonyManager().isDsdsTransitionSupported() ?
+                                        R.string.cant_call_due_to_dsdstransition_invalid_sub :
+                                        R.string.cant_call_due_to_no_supported_service;
+                                showErrorMessage(resId);
+
                                 mListeners.forEach(l -> l.onCreateConnectionFailed(callToPlace));
                                 if (callToPlace.isEmergencyCall()){
                                     mAnomalyReporter.reportAnomaly(
@@ -2491,16 +2496,23 @@ public class CallsManager extends Call.ListenerBase
         // Only dial with the requested phoneAccount if it is still valid. Otherwise treat this
         // call as if a phoneAccount was not specified (does the default behavior instead).
         // Note: We will not attempt to dial with a requested phoneAccount if it is disabled.
+        // Note: When DSDS transition is supported, it is possible for a phone account to no
+        // longer be valid if call on that account is disconnected. In this case, do not allow
+        // call to be placed if phoneAccount is not valid anymore. Otherwise, do the default
+        // behavior instead.
         if (targetPhoneAccountHandle != null) {
             if (accounts.contains(targetPhoneAccountHandle)) {
                 // The target phone account is valid and was found.
                 return CompletableFuture.completedFuture(Arrays.asList(targetPhoneAccountHandle));
             }
+            if (getTelephonyManager().isDsdsTransitionSupported()) {
+                accounts = Collections.emptyList();
+            }
         }
+
         if (accounts.isEmpty() || accounts.size() == 1) {
             return CompletableFuture.completedFuture(accounts);
         }
-
         // Do the query for whether there's a preferred contact
         final CompletableFuture<PhoneAccountHandle> userPreferredAccountForContact =
                 new CompletableFuture<>();
