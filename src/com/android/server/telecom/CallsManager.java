@@ -596,6 +596,7 @@ public class CallsManager extends Call.ListenerBase
             CallAnomalyWatchdog callAnomalyWatchdog,
             Ringer.AccessibilityManagerAdapter accessibilityManagerAdapter,
             Executor asyncTaskExecutor,
+            Executor asyncCallAudioTaskExecutor,
             BlockedNumbersAdapter blockedNumbersAdapter,
             TransactionManager transactionManager,
             EmergencyCallDiagnosticLogger emergencyCallDiagnosticLogger,
@@ -630,7 +631,7 @@ public class CallsManager extends Call.ListenerBase
                         statusBarNotifier,
                         audioServiceFactory,
                         CallAudioRouteStateMachine.EARPIECE_AUTO_DETECT,
-                        asyncTaskExecutor
+                        asyncCallAudioTaskExecutor
                 );
         callAudioRouteStateMachine.initialize();
 
@@ -639,7 +640,8 @@ public class CallsManager extends Call.ListenerBase
                         callAudioRouteStateMachine,
                         bluetoothManager,
                         wiredHeadsetManager,
-                        mDockManager);
+                        mDockManager,
+                        asyncRingtonePlayer);
         AudioManager audioManager = (AudioManager) mContext.getSystemService(Context.AUDIO_SERVICE);
         InCallTonePlayer.MediaPlayerFactory mediaPlayerFactory =
                 (resourceId, attributes) ->

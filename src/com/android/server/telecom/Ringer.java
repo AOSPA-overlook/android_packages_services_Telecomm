@@ -693,7 +693,7 @@ public class Ringer {
                         mAudioManager.getStreamVolume(AudioManager.STREAM_RING));
                 afterRingtoneLogic.accept(/* ringtone= */ null, /* stopped= */ false);
             } else if (ringtoneSupplier != null) {
-                mRingtonePlayer.play(ringtoneSupplier, afterRingtoneLogic);
+                mRingtonePlayer.play(ringtoneSupplier, afterRingtoneLogic, isHfpDeviceAttached);
             } else {
                 afterRingtoneLogic.accept(/* ringtone= */ null, /* stopped= */ false);
             }
