@@ -2708,6 +2708,7 @@ public class TelecomServiceImpl {
         int packageUid = -1;
         int callingUid = Binder.getCallingUid();
         PackageManager pm;
+        long token = Binder.clearCallingIdentity();
         try{
             pm = mContext.createContextAsUser(
                     UserHandle.getUserHandleForUid(callingUid), 0).getPackageManager();
@@ -2716,6 +2717,8 @@ public class TelecomServiceImpl {
             Log.i(this, "callingUidMatchesPackageManagerRecords:"
                             + " createContextAsUser hit exception=[%s]", e.toString());
             return false;
+        } finally {
+            Binder.restoreCallingIdentity(token);
         }
         if (pm != null) {
             try {
